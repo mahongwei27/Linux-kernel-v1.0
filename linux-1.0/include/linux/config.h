@@ -27,10 +27,10 @@
  */
 
 /* Don't touch these, unless you really know what your doing. */
-#define DEF_INITSEG	0x9000
-#define DEF_SYSSEG	0x1000
-#define DEF_SETUPSEG	0x9020
-#define DEF_SYSSIZE	0x7F00
+#define DEF_INITSEG	0x9000	/* bootsect 将自己搬移到的段起始地址为 0x90000 */
+#define DEF_SYSSEG	0x1000	/* system 被加载到的段起始地址为 0x10000 */
+#define DEF_SETUPSEG	0x9020	/* setup 被加载到的段起始地址为 0x90200 */
+#define DEF_SYSSIZE	0x7F00	/* system 模块的最大大小，单位是节，每节16字节，大小为 0x7F000 = 508kB */
 
 /* internal svga startup constants */
 #define NORMAL_VGA	0xffff		/* 80x25 mode */
