@@ -1,3 +1,44 @@
+/*
+ * 	setup.S 程序位于内存的 0x90200 地址处，占用 2kB 的内存空间，setup 执行
+ * 过程中所使用的栈仍然是 bootsect 设置在 0x93FF4 位置处的那个栈。
+ */
+
+/*
+ * 	setup 是操作系统加载程序，主要作用是:
+ *
+ * 	1. 利用 BIOS 设置在 0 地址处的中断读取机器系统参数，并保存在 0x90000
+ * 开始的位置上，覆盖掉原来的 bootsect 程序，这些参数后续将会被内核相关的程序使用。
+ * 	2. 将 system 模块从内存 0x10000(64kB) 开始的位置处移动到内存0x01000(4kB)
+ * 开始的位置处。
+ * 	3. 加载 IDTR 和 GDTR。
+ * 	4. 开启 A20 地址线，使处理器可以访问 1MB 以上的内存空间。
+ * 	5. 重新设置两个中断控制芯片 8259A，将硬件中断号重新设置为 0x20 - 0x2f。
+ * 	6. 设置 CR0 寄存器，开启段级保护，处理器进入 32 位保护模式运行，并跳转到
+ * system 模块最前面的 head.S 程序中执行。
+ */
+
+ /*
+  * 	最终存放在 0x90000 处的参数表:
+  *
+  * 	【内存地址】	【长度(字节)】	【说明】
+  *	  0x90000		2	当前光标位置
+  *	  0x90002		2	扩展内存，单位是 kB
+  *	  0x90004		2	当前显示页面
+  *	  0x90006		1	显示模式
+  *	  0x90007		1	字符列数
+  *	  0x90008		2
+  *	  0x9000A		1	显存大小
+  *	  0x9000B		1	显示状态
+  *	  0x9000C		2	特性参数
+  *	  0x9000E		1	屏幕行数
+  *	  0x9000F		1	屏幕列数
+  *	  .......
+  *	  0x90080		16	第一个硬盘的参数表
+  *	  0x90090		16	第二个硬盘的参数表，没有则清0
+  *	  .......
+  *	  0x901FC		2	根文件系统所在设备的设备号
+  */
+
 !
 !	setup.S		Copyright (C) 1991, 1992 Linus Torvalds
 !
@@ -40,7 +81,7 @@ begbss:
 .text
 
 entry start
-start:
+start:				/* setup 程序开始执行的地方 */
 
 ! ok, the read went well so we get current cursor position and save it for
 ! posterity.
@@ -53,12 +94,21 @@ start:
 	mov	ah,#0x88
 	int	0x15
 	mov	[2],ax
+				/*
+				 * 	以上三行: 通过 BIOS 设置在 0 地址处的中断(中断号为0x15，功能号为0x88)
+				 * 获取系统扩展内存的大小，并保存在 0x90002 处，1MB 以上的内存属于扩展内存。
+				 * 0x90000 处会保存光标的当前位置。
+				 */
 
 ! set the keyboard repeat rate to the max
 
 	mov	ax,#0x0305
 	xor	bx,bx		! clear bx
 	int	0x16
+				/*
+				 * 	以上三行: 将键盘的重复率设置为最大值。当用户保持按下键盘上的某一个
+				 * 按键时，该字符重复的速率就是键盘重复率。
+				 */
 
 ! check for EGA/VGA and some config parameters
 
@@ -90,6 +140,9 @@ novga:	mov	[14],ax
 	int	0x10
 	mov	[4],bx		! bh = display page
 	mov	[6],ax		! al = video mode, ah = window width
+				/*
+				 * 	以上代码: 获取显示相关的信息，并保存在相应位置上。
+				 */
 
 ! Get hd0 data
 
@@ -116,6 +169,10 @@ novga:	mov	[14],ax
 	cld
 	rep
 	movsb
+				/*
+				 * 	以上代码: 获取两个硬盘 hd0 和 hd1 的参数表，每个参数表长度为 16 字节，
+				 * 获取到的参数表分别保存在 0x90080 和 0x90090 两个地址处。
+				 */
 
 ! Check that there IS a hd1 :-)
 
@@ -135,6 +192,10 @@ no_disk1:
 	rep
 	stosb
 is_disk1:
+				/*
+				 * 	以上代码: 检查系统是否有第二个硬盘，如果没有，则把保存在 0x90090 处的
+				 * 第二个表清 0 。
+				 */
 
 ! check for PS/2 pointing device
 
@@ -146,11 +207,31 @@ is_disk1:
 	jz	no_psmouse
 	mov	[0x1ff],#0xaa	! device present
 no_psmouse:
+				/*
+				 * 	以上代码: 检测是否安装了 PS/2 类型的鼠标，若有，则在 0x901ff 处写入
+				 * 0xaa 表示 PS/2 类型的鼠标存在。
+				 */
+
+				/*
+				 * 	至此，从 BIOS 中获取系统参数，并存放在 0x90000 开始的地方，这个工作
+				 * 已经完成了，获取过程中所使用的中断向量表为 BIOS 设置在内存 0 地址处的中断
+				 * 向量表，该向量表的使命已经完成。
+				 */
+
+
+				/*
+				 * 	从此开始向下，将是新的流程。
+				 */
 ! now we want to move to protected mode ...
 
 	cli			! no interrupts allowed !
 	mov	al,#0x80	! disable NMI for the bootup sequence
 	out	#0x70,al
+				/*
+				 * 	马上将进入保护模式，从此开始将暂停中断的响应。禁止全局中断，同时禁止
+				 * 不可屏蔽中断 NMI，待后续在合适的时机再重新开启中断。
+				 * 	cli 指令所关闭的中断是外部硬件中断，软中断并未被关闭。
+				 */
 
 ! first we move the system to its rightful place
 
@@ -170,6 +251,14 @@ do_move:
 	rep
 	movsw
 	jmp	do_move
+				/*
+				 * 	以上代码: 将位于 0x10000(64kB) 地址处的 system 模块搬移到内存
+				 * 0x1000(4kB) 开始的位置处，内存最开始的 4kB 空间保留。
+				 *
+				 *  	源起始地址为   ds:si(1000:0000) ===> 0x10000 (64kB地址处)
+				 * 	目的起始地址为 es:di(0100:0000) ===> 0x01000 (4kB地址处)
+				 * 	每次搬移大小为 0x800字 = 0x800 * 2 = 0x1000字节 = 4kB
+				 */
 
 ! then we load the segment descriptors
 
@@ -178,6 +267,14 @@ end_move:
 	mov	ds,ax
 	lidt	idt_48		! load idt with 0,0
 	lgdt	gdt_48		! load gdt with whatever appropriate
+				/*
+				 * 	以上代码: lidt 指令用于加载中断描述符表寄存器 IDTR，将 idt_48 地址处
+				 * 的 6 字节值加载到 IDTR 中。lgdt 指令用于加载全局描述符表寄存器 GDTR，将
+				 * gdt_48 地址处的6字节值加载到 GDTR 中。
+				 *
+				 * 	此处只是临时设置 IDTR 和 GDTR，因为后续会有些 32 位保护模式的操作。在
+				 * head.S 中会重新设置最终真正使用的 IDTR 和 GDTR。
+				 */
 
 ! that was painless, now we enable A20
 
@@ -188,6 +285,13 @@ end_move:
 	mov	al,#0xDF		! A20 on
 	out	#0x60,al
 	call	empty_8042
+				/*
+				 * 	以上代码: 开启 A20 地址线，这样处理器就可以访问 1MB 以上的内存空间了，
+				 * 若不开启，则处理器的地址线只有 20 根，只能访问 1MB 以内的地址空间，对 1MB
+				 * 以上的空间的访问，则会环绕到 1MB 以内。
+				 * 	判断 A20 地址线是否真的开启成功，这个测试放在了 head.S 中。此处不能
+				 * 判断是因为处理器还未进入保护模式，还不能访问 1MB 以上的内存空间。
+				 */
 
 ! make sure any possible coprocessor is properly reset..
 
@@ -196,6 +300,9 @@ end_move:
 	call	delay
 	out	#0xf1,al
 	call	delay
+				/*
+				 * 	以上代码: 确保所有可能的协处理器都已正确重置。
+				 */
 
 ! well, that went ok, I hope. Now we have to reprogram the interrupts :-(
 ! we put them right after the intel-reserved hardware interrupts, at
@@ -232,6 +339,10 @@ end_move:
 	call	delay
 	mov	al,#0xFB		! mask all irq's but irq2 which
 	out	#0x21,al		! is cascaded
+				/*
+				 * 	以上代码: 重新编程 8259 中断控制器，将硬件中断号重新设置为
+				 * 0x20 - 0x2f。
+				 */
 
 ! well, that certainly wasn't fun :-(. Hopefully it works, and we don't
 ! need no steenking BIOS anyway (except for the initial loading :-).
@@ -251,6 +362,22 @@ end_move:
 	jmp	flush_instr
 flush_instr:
 	jmpi	0x1000,KERNEL_CS	! jmp offset 1000 of segment 0x10 (cs)
+				/*
+				 * 	这是 setup 程序结束的位置，跳转到 0x01000(4kB) 地址处执行 head.S 程序。
+				 *
+				 * 	以上代码: 开启保护模式，跳转到 head.S 执行。
+				 *
+				 * 	lmsw是机器状态字，也称为控制寄存器 CR0，CR0 的 bit0 是 PE 位，置 1
+				 * 用于开启系统的段级保护，处理器将切换到保护模式，运行在特权级 0 中，即
+				 * CPL = 0，但是代码的执行位置并未发生变化，在设置 PE 位之后，随后一条指令
+				 * 必须是一条段间跳转指令(jmp flush_instr)，用以刷新 CPU 当前的指令队列，丢弃
+				 * 掉之前已经取得的实模式下的指令信息。
+				 *
+				 * 	开启段保护之后，跳转到内核代码段的 4kB 偏移处继续执行程序，而这个位置
+				 * 也就是 head.S 中代码的起始位置，位于内存的 0x01000(4kB) 地址处。因为 setup
+				 * 设置的 GDT 表中的内核代码段的起始地址为 0 地址，而 system 模块被搬移到了内存
+				 * 4kB 起始的位置处，所以跳转的偏移为内核代码段的 0x1000。
+				 */
 
 ! This routine checks that the keyboard command queue is empty
 ! (after emptying the output buffers)
@@ -774,7 +901,14 @@ prnt1:	push	ax
 
 beep:	mov	al,#0x07
 	jmp	prnt1
-	
+
+				/*
+				 * 	下面是 setup 临时设置的 GDT 表，目前只有 4 个表项，每个表项 8 字节，
+				 * 前两个表项未使用，第三个表项在 GDT 中的偏移是 0x10(KERNEL_CS)，是内核代码
+				 * 段描述符的值，用于描述内核代码段的信息，由内核代码段选择符 0x10 选择该
+				 * 描述符。第四个表项在 GDT 中的偏移是 0x18(KERNEL_DS)，是内核数据段描述符的值，
+				 * 用于描述内核数据段的信息，由内核数据段选择符 0x18 选择该描述符。
+				 */
 gdt:
 	.word	0,0,0,0		! dummy
 
@@ -784,19 +918,39 @@ gdt:
 	.word	0x0000		! base address=0
 	.word	0x9A00		! code read/exec
 	.word	0x00C0		! granularity=4096, 386
+				/*
+				 * 	内核代码段描述符: 内核代码段起始线性地址为 0，因还未开启分页，所以线性
+				 * 地址 0 也就是物理地址 0，段大小为 8MB。
+				 */
 
 	.word	0x07FF		! 8Mb - limit=2047 (2048*4096=8Mb)
 	.word	0x0000		! base address=0
 	.word	0x9200		! data read/write
 	.word	0x00C0		! granularity=4096, 386
+				/*
+				 * 	内核数据段描述符: 内核数据段起始线性地址为 0，因还未开启分页，所以线性
+				 * 地址 0 也就是物理地址 0，段大小为 8MB。
+				 */
 
 idt_48:
 	.word	0			! idt limit=0
 	.word	0,0			! idt base=0L
+				/*
+				 * 	6 字节操作数用于加载到 IDTR，因为 head.S 会重新设置最终使用的 IDT 表，
+				 * 而 CPU 要求在进入保护模式之前需设置 IDT 表，所以这里先设置一个长度为 0 的
+				 * 空表。
+				 * 	IDT 表的线性基地址为 0，段大小为 0。
+				 */
 
 gdt_48:
 	.word	0x800		! gdt limit=2048, 256 GDT entries
 	.word	512+gdt,0x9	! gdt base = 0X9xxxx
+				/*
+				 * 	6 字节操作数用于加载到 GDTR，GDT 表的长度为 2048 字节，GDT 表中的每个
+				 * 段描述符的大小为 8 字节，所以 GDT 表中共有 256 个段描述符表项，虽然此处
+				 * 设置 GDT 表大小为 2kB，但在 setup 中实际只分配了 32 字节的空间。
+				 * 	GDT 表的线性基地址为 (0x9 << 16) + 0x0200 + gdt = 0x90200 + gdt。
+				 */
 
 msg1:		.ascii	"Press <RETURN> to see SVGA-modes available, <SPACE> to continue or wait 30 secs."
 		db	0x0d, 0x0a, 0x0a, 0x00
