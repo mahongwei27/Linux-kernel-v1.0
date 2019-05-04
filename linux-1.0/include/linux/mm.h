@@ -157,6 +157,11 @@ extern int do_munmap(unsigned long, size_t);
 #define write_swap_page(nr,buf) \
 	rw_swap_page(WRITE,(nr),(buf))
 
+/*
+ * 	invalidate: 刷新 TLB: 用 mov 指令重新加载 CR3 会刷新 TLB。刷新 TLB 会使得
+ * 缓存在 TLB 中的页目录表和页表失效，下次转换时需从内存中重新加载并缓存页目录表
+ * 和页表。
+ */
 #define invalidate() \
 __asm__ __volatile__("movl %%cr3,%%eax\n\tmovl %%eax,%%cr3": : :"ax")
 
@@ -177,10 +182,10 @@ extern unsigned short * mem_map;
 #define PAGE_COW	0x200	/* implemented in software (one of the AVL bits) */
 
 #define PAGE_PRIVATE	(PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_ACCESSED | PAGE_COW)
-#define PAGE_SHARED	(PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_ACCESSED)
+#define PAGE_SHARED	(PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_ACCESSED)	/* 物理内存页面的属性 */
 #define PAGE_COPY	(PAGE_PRESENT | PAGE_USER | PAGE_ACCESSED | PAGE_COW)
 #define PAGE_READONLY	(PAGE_PRESENT | PAGE_USER | PAGE_ACCESSED)
-#define PAGE_TABLE	(PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_ACCESSED)
+#define PAGE_TABLE	(PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_ACCESSED)	/* 页表的属性 */
 
 #define GFP_BUFFER	0x00
 #define GFP_ATOMIC	0x01

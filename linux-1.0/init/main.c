@@ -26,6 +26,7 @@
 
 extern unsigned long * prof_buffer;
 extern unsigned long prof_len;
+/* edata: 内核代码段结束的位置。end: 整个内核模块结束的位置。这两个位置均由链接程序设置 */
 extern char edata, end;
 extern char *linux_banner;
 asmlinkage void lcall7(void);
@@ -106,26 +107,26 @@ extern unsigned long scsi_dev_init(unsigned long, unsigned long);
  * This is set up by the setup-routine at boot-time
  */
 #define PARAM	empty_zero_page
-#define EXT_MEM_K (*(unsigned short *) (PARAM+2))
-#define DRIVE_INFO (*(struct drive_info_struct *) (PARAM+0x80))
-#define SCREEN_INFO (*(struct screen_info *) (PARAM+0))
-#define MOUNT_ROOT_RDONLY (*(unsigned short *) (PARAM+0x1F2))
-#define RAMDISK_SIZE (*(unsigned short *) (PARAM+0x1F8))
-#define ORIG_ROOT_DEV (*(unsigned short *) (PARAM+0x1FC))
-#define AUX_DEVICE_INFO (*(unsigned char *) (PARAM+0x1FF))
+#define EXT_MEM_K (*(unsigned short *) (PARAM+2))		/* 扩展内存的大小，单位是 kB */
+#define DRIVE_INFO (*(struct drive_info_struct *) (PARAM+0x80))	/* 两个硬盘的参数表，共 32 字节 */
+#define SCREEN_INFO (*(struct screen_info *) (PARAM+0))		/* 显示系统相关的参数 */
+#define MOUNT_ROOT_RDONLY (*(unsigned short *) (PARAM+0x1F2))	/* 挂载根文件系统时的选项，是否只读 */
+#define RAMDISK_SIZE (*(unsigned short *) (PARAM+0x1F8))	/* 内存虚拟盘的大小 */
+#define ORIG_ROOT_DEV (*(unsigned short *) (PARAM+0x1FC))	/* 根文件系统所在设备的设备号 */
+#define AUX_DEVICE_INFO (*(unsigned char *) (PARAM+0x1FF))	/* PS/2 类型的鼠标是否存在的标志 */
 
 /*
  * Boot command-line arguments
  */
 #define MAX_INIT_ARGS 8
 #define MAX_INIT_ENVS 8
-#define COMMAND_LINE ((char *) (PARAM+2048))
+#define COMMAND_LINE ((char *) (PARAM+2048))	/* 命令行参数的位置 */
 
 extern void time_init(void);
 
 static unsigned long memory_start = 0;	/* After mem_init, stores the */
 					/* amount of free user memory */
-static unsigned long memory_end = 0;
+static unsigned long memory_end = 0;	/* 内存的结束位置，页边界对齐，也表示内存的大小。 */
 static unsigned long low_memory_start = 0;
 
 static char term[21];
@@ -140,15 +141,22 @@ static char * envp_rc[] = { "HOME=/", term, NULL };
 static char * argv[] = { "-/bin/sh",NULL };
 static char * envp[] = { "HOME=/usr/root", term, NULL };
 
+/* drive_info: 存放两个硬盘的参数表，共 32 字节 */
 struct drive_info_struct { char dummy[32]; } drive_info;
+/* screen_info: 存放显示系统相关的参数 */
 struct screen_info screen_info;
 
+/* aux_device_present: PS/2 类型的鼠标是否存在的标志 */
 unsigned char aux_device_present;
+/* ramdisk_size: 内存虚拟盘的大小，内存虚拟盘主要作用是: 将位于软盘中的根文件系统拷贝到内存虚拟盘中，
+		 并在内存虚拟盘中挂载根文件系统。*/
 int ramdisk_size;
+/* root_mountflags: 根文件系统的挂载选项。 */
 int root_mountflags = 0;
 
 static char fpu_error = 0;
 
+/* command_line: 存放命令行参数 */
 static char command_line[80] = { 0, };
 
 char *get_options(char *str, int *ints) 
@@ -326,6 +334,10 @@ static void parse_options(char *line)
 	envp_init[envs+1] = NULL;
 }
 
+/*
+ *	copy_options: 将参数从 from 拷贝到 to 处。如果参数中有字符串 " mem=" 存在，
+ * 则需要重新设置内存的结束位置 memory_end。
+ */
 static void copy_options(char * to, char * from)
 {
 	char c = ' ';
@@ -359,8 +371,8 @@ asmlinkage void start_kernel(void)
  	drive_info = DRIVE_INFO;
  	screen_info = SCREEN_INFO;
 	aux_device_present = AUX_DEVICE_INFO;
-	memory_end = (1<<20) + (EXT_MEM_K<<10);
-	memory_end &= PAGE_MASK;
+	memory_end = (1<<20) + (EXT_MEM_K<<10);	/* 1MB + 扩展内存 */
+	memory_end &= PAGE_MASK;	/* 内存结束地址在页边界(4kB)处对齐 */
 	ramdisk_size = RAMDISK_SIZE;
 	copy_options(command_line,COMMAND_LINE);
 #ifdef CONFIG_MAX_16M
@@ -376,7 +388,7 @@ asmlinkage void start_kernel(void)
 		memory_start = 1024*1024;
 		low_memory_start = (unsigned long) &end;
 	}
-	low_memory_start = PAGE_ALIGN(low_memory_start);
+	low_memory_start = PAGE_ALIGN(low_memory_start);	/* 对齐到下一个 4kB 的边界处 */
 	memory_start = paging_init(memory_start,memory_end);
 	if (strncmp((char*)0x0FFFD9, "EISA", 4) == 0)
 		EISA_bus = 1;

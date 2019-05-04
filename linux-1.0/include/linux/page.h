@@ -3,7 +3,7 @@
 
 			/* PAGE_SHIFT determines the page size */
 #define PAGE_SHIFT			12
-#define PAGE_SIZE			((unsigned long)1<<PAGE_SHIFT)
+#define PAGE_SIZE			((unsigned long)1<<PAGE_SHIFT)	/* 页面大小为 4kB */
 
 #ifdef __KERNEL__
 
@@ -27,7 +27,7 @@
 #define PAGE_PTR(address)		\
   ((unsigned long)(address)>>(PAGE_SHIFT-SIZEOF_PTR_LOG2)&PTR_MASK&~PAGE_MASK)
 			/* the no. of pointers that fit on a page */
-#define PTRS_PER_PAGE			(PAGE_SIZE/sizeof(void*))
+#define PTRS_PER_PAGE			(PAGE_SIZE/sizeof(void*))	/* 一页内存中可存放的页表项的个数 */
 
 #endif /* __KERNEL__ */
 

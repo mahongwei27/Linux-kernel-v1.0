@@ -18,8 +18,8 @@ __asm__ __volatile__ ("movl %%esp,%%eax\n\t" \
 	"mov %%ax,%%gs" \
 	: /* no outputs */ :"i" (USER_DS), "i" (USER_CS):"ax")
 
-#define sti() __asm__ __volatile__ ("sti": : :"memory")
-#define cli() __asm__ __volatile__ ("cli": : :"memory")
+#define sti() __asm__ __volatile__ ("sti": : :"memory")	/* 开启外部硬件中断 */
+#define cli() __asm__ __volatile__ ("cli": : :"memory")	/* 禁止外部硬件中断，但不能禁止使用 INT 指令产生的软件中断 */
 #define nop() __asm__ __volatile__ ("nop")
 
 /*
@@ -52,6 +52,11 @@ __asm__ __volatile__("pushl %0 ; popfl": /* no output */ :"r" (x):"memory")
 
 #define iret() __asm__ __volatile__ ("iret": : :"memory")
 
+/*
+ *	中断描述符表 IDT 中可以存放 3 种类型的门描述符: 中断门、陷阱门、任务门，
+ * _set_gate 宏只用于设置中断门和陷阱门。因调用门的格式与中断门和陷阱门类似，故
+ * 这个宏也可以设置调用门，但是调用门传入的参数 gate_addr 有所区别。
+ */
 #define _set_gate(gate_addr,type,dpl,addr) \
 __asm__ __volatile__ ("movw %%dx,%%ax\n\t" \
 	"movw %2,%%dx\n\t" \
@@ -63,15 +68,52 @@ __asm__ __volatile__ ("movw %%dx,%%ax\n\t" \
 	 "d" ((char *) (addr)),"a" (KERNEL_CS << 16) \
 	:"ax","dx")
 
+/*
+ *	set_intr_gate: 设置 IDT 表中的中断门描述符。
+ *
+ * 入参: n --- 中断号。
+ *	 addr --- 中断处理程序的地址。
+ * 传参: &idt[n] --- 中断号 n 对应的中断描述符的地址。
+ *	 14 --- 描述符类型，表示中断门描述符。
+ *	 0 --- 描述符的特权级，表明中断处理函数只能在 0 特权级下执行。
+ */
 #define set_intr_gate(n,addr) \
 	_set_gate(&idt[n],14,0,addr)
 
+/*
+ *	set_trap_gate: 设置 IDT 表中的陷阱门描述符。
+ *
+ * 入参: n --- 中断号。
+ *	 addr --- 陷阱处理程序的地址。
+ * 传参: &idt[n] --- 中断号 n 对应的中断描述符的地址。
+ *	 15 --- 描述符类型，表示陷阱门描述符。
+ *	 0 --- 描述符的特权级，表明陷阱处理函数只能在 0 特权级下执行。
+ */
 #define set_trap_gate(n,addr) \
 	_set_gate(&idt[n],15,0,addr)
 
+/*
+ *	set_system_gate: 设置 IDT 表中的系统陷阱门描述符。
+ *
+ * 入参: n --- 中断号。
+ *	 addr --- 陷阱处理程序的地址。
+ * 传参: &idt[n] --- 中断号 n 对应的中断描述符的地址。
+ *	 15 --- 描述符类型，表示陷阱门描述符。
+ *	 3 --- 描述符的特权级。表明陷阱处理函数能够被所有程序执行。
+ */
 #define set_system_gate(n,addr) \
 	_set_gate(&idt[n],15,3,addr)
 
+#if 0
+/*
+ *	set_call_gate: 设置系统调用门描述符。
+ *
+ * 入参: a --- 调用门描述符的地址。
+ *	 addr --- 调用门处理程序的地址。
+ * 传参: 12 --- 描述符类型，表示调用门描述符。
+ *	 3 --- 描述符的特权级。表明调用门处理函数能够被所有程序执行。
+ */
+#endif
 #define set_call_gate(a,addr) \
 	_set_gate(a,12,3,addr)
 

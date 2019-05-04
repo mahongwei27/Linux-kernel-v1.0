@@ -1005,6 +1005,18 @@ void show_mem(void)
  * This routines also unmaps the page at virtual kernel address 0, so
  * that we can trap those pesky NULL-reference errors in the kernel.
  */
+/*
+ *	paging_init: 映射所有的物理内存空间，将所有内存空间一对一映射到线性地址 0 和
+ * 线性地址 0xC0000000 开始的两个空间内。
+ *
+ *	页目录表位于 0x1000 处，第一个页表位于 0x2000 处，之后是内核代码及数据所占用
+ * 的空间。剩余的页表在映射时将从 start_mem 处开始依次存放，最后返回的 start_mem 将
+ * 跳过这些页表，这些页表是内核的页表，将永远存在。
+ *
+ *	内核的这种映射方式，如果不考虑线性基地址，则线性地址和物理地址是一一对应的，
+ * 物理地址 + 线性基地址就是线性地址。比如物理内存有 16MB，则线性地址 0xC0000000 开始
+ * 的 16MB 空间将与物理内存的 16MB 空间一一对应。
+ */
 unsigned long paging_init(unsigned long start_mem, unsigned long end_mem)
 {
 	unsigned long * pg_dir;
@@ -1018,23 +1030,59 @@ unsigned long paging_init(unsigned long start_mem, unsigned long end_mem)
  * and write protected to detect null pointer references in the
  * kernel.
  */
+/*
+ *	物理页面 0 是特殊的，Linux不会触及它，因为 BIOS 和 SMM (对于带有
+ * [34]86/SL 芯片的笔记本电脑)可能需要它。它具有读写保护，可以检测内核
+ * 中的空指针引用。
+ */
 #if 0
 	memset((void *) 0, 0, PAGE_SIZE);
 #endif
 	start_mem = PAGE_ALIGN(start_mem);
+			/*
+			 *	start_mem 对齐到下一个 4kB 的边界处，因为要从这个位置开始存放
+			 * 页表，所以需要在页边界处对齐。
+			 *	内核的页目录表在 0x1000(swapper_pg_dir) 地址处，第一个页表在
+			 * 0x2000(pg0) 地址处，从第二个页表开始的后续所有页表都在 start_mem
+			 * 开始的连续的内存页面中。
+			 */
 	address = 0;
-	pg_dir = swapper_pg_dir;
+		/*
+		 *	从物理内存的 0 地址开始，一直到 end_mem，所有的内存空间都要被同步映射
+		 * 到 0x00000000 和 0xC0000000 开始的两个线性地址空间中。
+		 */
+	pg_dir = swapper_pg_dir;	/* pg_dir 指向页目录表的第 0 个页目录项 */
 	while (address < end_mem) {
 		tmp = *(pg_dir + 768);		/* at virtual addr 0xC0000000 */
+				/*
+				 *	tmp: 循环获取从页目录表的第 768 项开始的页目录项的内容。
+				 * 第 768 项页目录项和第 0 项页目录项在 head.S 中已经映射过了，
+				 * 此处直接将第 768 项页目录项的内容重新放到第 0 项即可。
+				 */
 		if (!tmp) {
+			/*
+			 *	页目录项的内容为空，该页目录项还没有指向的页表，即该页目录项对应
+			 * 的 4MB 的线性地址空间还未被映射。则从 start_mem 处分 4kB 的空间作为页
+			 * 表使用，start_mem 向后偏移 4kB。
+			 */
 			tmp = start_mem | PAGE_TABLE;
-			*(pg_dir + 768) = tmp;
+			*(pg_dir + 768) = tmp;	/* 建立页目录项与页表的映射关系 */
 			start_mem += PAGE_SIZE;
 		}
 		*pg_dir = tmp;			/* also map it in at 0x0000000 for init */
-		pg_dir++;
+			/* 
+			 *	将 tmp 同时放入线性地址 0 开始的页目录项中，表示线性地址 0 开始
+			 * 的线性空间和线性地址 0xC0000000 开始的线性空间映射到同一物理内存空间。
+			 */
+		pg_dir++;	/* pg_dir 指向下一个页目录项 */
 		pg_table = (unsigned long *) (tmp & PAGE_MASK);
+				/*
+				 *	pg_table 指向页目录项对应的页表的第 0 个页表项。
+				 */
 		for (tmp = 0 ; tmp < PTRS_PER_PAGE ; tmp++,pg_table++) {
+			/*
+			 *	循环建立一个页表中的每个页表项与 4kB 的物理内存页面之间的映射关系。
+			 */
 			if (address < end_mem)
 				*pg_table = address | PAGE_SHARED;
 			else
@@ -1042,8 +1090,8 @@ unsigned long paging_init(unsigned long start_mem, unsigned long end_mem)
 			address += PAGE_SIZE;
 		}
 	}
-	invalidate();
-	return start_mem;
+	invalidate();	/* 更新了页目录表和页表，需要刷新 TLB。 */
+	return start_mem;	/* 跳过页表所占用的空间 */
 }
 
 void mem_init(unsigned long start_low_mem,

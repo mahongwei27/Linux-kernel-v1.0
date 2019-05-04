@@ -19,7 +19,7 @@
 struct screen_info {
 	unsigned char  orig_x;
 	unsigned char  orig_y;
-	unsigned char  unused1[2];
+	unsigned char  unused1[2];	/* 扩展内存大小占用了这个位置 */
 	unsigned short orig_video_page;
 	unsigned char  orig_video_mode;
 	unsigned char  orig_video_cols;
