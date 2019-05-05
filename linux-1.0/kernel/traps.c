@@ -194,6 +194,19 @@ asmlinkage void do_coprocessor_error(struct pt_regs * regs, long error_code)
 	math_error();
 }
 
+/*
+ *	trap_init: 异常(陷阱)中断程序初始化，设置它们的中断调用门，trap 和 system 都使用
+ * 了 IDT 表中的陷阱门。不同的是 trap 设置的 DPL = 0，system 设置的 DPL = 3。
+ *
+ *	trap 和 system 所设置的一种是由 CPU 自身产生的异常，比如除数为 0，页面错误等。另
+ * 一种是用户程序通过 INT 指令产生的中断(陷阱)，主要用来产生系统调用。这些中断门的向量除
+ * 用于系统调用的 0x80 以外全都在 0x20 以下，0x20 以上的都是用于外设的通用中断门，这些在
+ * 后面的 init_IRQ 中设置。
+ *
+ *	trap 中设置 DPL = 0 是为了阻止在特权级为 3 的用户空间中通过 INT 指令触发的异常穿
+ * 过陷阱门，system 中设置 DPL = 3 是为了让在特权级为 3 的用户空间中通过 INT 指令触发的
+ * 异常可是顺利穿过陷阱门。
+ */
 void trap_init(void)
 {
 	int i;
@@ -212,7 +225,7 @@ void trap_init(void)
 	set_trap_gate(11,&segment_not_present);
 	set_trap_gate(12,&stack_segment);
 	set_trap_gate(13,&general_protection);
-	set_trap_gate(14,&page_fault);
+	set_trap_gate(14,&page_fault);	/* 页错误，缺页异常或页写保护异常 */
 	set_trap_gate(15,&reserved);
 	set_trap_gate(16,&coprocessor_error);
 	set_trap_gate(17,&alignment_check);

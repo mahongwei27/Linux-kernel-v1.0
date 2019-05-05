@@ -381,7 +381,7 @@ asmlinkage void start_kernel(void)
 #endif
 	if (MOUNT_ROOT_RDONLY)
 		root_mountflags |= MS_RDONLY;
-	if ((unsigned long)&end >= (1024*1024)) {
+	if ((unsigned long)&end >= (1024*1024)) {	/* 内核模块的结束位置超过 1MB */
 		memory_start = (unsigned long) &end;
 		low_memory_start = PAGE_SIZE;
 	} else {
@@ -392,8 +392,8 @@ asmlinkage void start_kernel(void)
 	memory_start = paging_init(memory_start,memory_end);
 	if (strncmp((char*)0x0FFFD9, "EISA", 4) == 0)
 		EISA_bus = 1;
-	trap_init();
-	init_IRQ();
+	trap_init();	/* 对系统保留的中断向量的初始化 */
+	init_IRQ();	/* 对外设的中断初始化 */
 	sched_init();
 	parse_options(command_line);
 #ifdef CONFIG_PROFILE
