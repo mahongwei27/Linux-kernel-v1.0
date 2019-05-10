@@ -231,4 +231,10 @@ void trap_init(void)
 	set_trap_gate(17,&alignment_check);
 	for (i=18;i<48;i++)
 		set_trap_gate(i,&reserved);
+			/*
+			 *	0x20 以下，也就是 0 - 31 号中断是处理器使用及系统保留的，
+			 * 32 - 255 号中断用于外部中断或 INTn 指令产生的软中断。目前系统
+			 * 只有 16 个外部中断，编号为 32 - 47，在后面的 init_IRQ 中初始化。
+			 * 0x80 号中断用于系统调用，在后面的 sched_init 中初始化。
+			 */
 }

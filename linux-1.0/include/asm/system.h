@@ -20,7 +20,7 @@ __asm__ __volatile__ ("movl %%esp,%%eax\n\t" \
 
 #define sti() __asm__ __volatile__ ("sti": : :"memory")	/* 开启外部硬件中断 */
 #define cli() __asm__ __volatile__ ("cli": : :"memory")	/* 禁止外部硬件中断，但不能禁止使用 INT 指令产生的软件中断 */
-#define nop() __asm__ __volatile__ ("nop")
+#define nop() __asm__ __volatile__ ("nop")		/* 空操作 */
 
 /*
  * Clear and set 'TS' bit respectively
@@ -44,9 +44,11 @@ extern inline int tas(char * m)
 	return res;
 }
 
+/* 将标志寄存器 EFLAGS 中的值保存到 x 中。 */
 #define save_flags(x) \
 __asm__ __volatile__("pushfl ; popl %0":"=r" (x): /* no input */ :"memory")
 
+/* 将 x 中的值恢复到标志寄存器 EFLAGS 中。 */
 #define restore_flags(x) \
 __asm__ __volatile__("pushl %0 ; popfl": /* no output */ :"r" (x):"memory")
 

@@ -179,6 +179,14 @@ static void (*bad_interrupt[16])(void) = {
 /*
  * Initial irq handlers.
  */
+/*
+ *	16 个外设中断的中断属性结构，每个中断属性结构中:
+ *
+ * sa_handler:	表示具体的中断处理函数。
+ * sa_mask:	表示中断对应的中断属性结构是否被安装。1 = 已安装，0 = 未安装。
+ * sa_flags:	表示该中断是快速中断还是普通中断。SA_INTERRUPT = 快速中断，0 = 普通中断。
+ * sa_restorer:	未使用，无效。
+ */
 static struct sigaction irq_sigaction[16] = {
 	{ NULL, 0, 0, NULL }, { NULL, 0, 0, NULL },
 	{ NULL, 0, 0, NULL }, { NULL, 0, 0, NULL },
@@ -218,6 +226,10 @@ asmlinkage void do_fast_IRQ(int irq)
 	sa->sa_handler(irq);
 }
 
+/*
+ *	为中断绑定中断属性结构，传入中断编号(0 - 15)和对应的中断属性结构，
+ * 同时会设置 IDT 表中该中断对应的中断门描述符，最后使能中断。
+ */
 int irqaction(unsigned int irq, struct sigaction * new_sa)
 {
 	struct sigaction * sa;
@@ -225,19 +237,31 @@ int irqaction(unsigned int irq, struct sigaction * new_sa)
 
 	if (irq > 15)
 		return -EINVAL;
+			/* 16 个中断编号为 0 - 15 */
+
 	sa = irq + irq_sigaction;
 	if (sa->sa_mask)
 		return -EBUSY;
+			/* 该中断的中断属性结构已安装，不能重复安装 */
 	if (!new_sa->sa_handler)
 		return -EINVAL;
+			/* 中断必须要有中断处理函数 */
+
 	save_flags(flags);
 	cli();
+			/* 保存 EFLAGS 并关外部中断 */
+
 	*sa = *new_sa;
+			/* 在数组 irq_sigaction 中安装中断对应的中断属性结构 */
 	sa->sa_mask = 1;
+			/* 设置中断属性结构已安装标志 */
+
 	if (sa->sa_flags & SA_INTERRUPT)
 		set_intr_gate(0x20+irq,fast_interrupt[irq]);
 	else
 		set_intr_gate(0x20+irq,interrupt[irq]);
+			/* 设置 IDT 表中该中断对应的中断门描述符 */
+
 	if (irq < 8) {
 		cache_21 &= ~(1<<irq);
 		outb(cache_21,0x21);
@@ -247,17 +271,24 @@ int irqaction(unsigned int irq, struct sigaction * new_sa)
 		outb(cache_21,0x21);
 		outb(cache_A1,0xA1);
 	}
+			/* 使能中断 */
+
 	restore_flags(flags);
+			/* 恢复 EFLAGS */
 	return 0;
 }
-		
+
+/*
+ *	请求中断，传入中断编号(0 - 15)和对应的中断处理函数，本质上还是为中断绑定
+ * 中断属性结构。只是调用 request_irq 会将中断设置为普通中断并强制绑定。
+ */
 int request_irq(unsigned int irq, void (*handler)(int))
 {
 	struct sigaction sa;
 
 	sa.sa_handler = handler;
-	sa.sa_flags = 0;
-	sa.sa_mask = 0;
+	sa.sa_flags = 0;	/* 设置该中断为普通中断 */
+	sa.sa_mask = 0;		/* 如果之前该中断的属性结构已经绑定过，将会强制重新绑定 */
 	sa.sa_restorer = NULL;
 	return irqaction(irq,&sa);
 }
@@ -316,20 +347,39 @@ static void no_action(int cpl) { }
 static struct sigaction ignore_IRQ = {
 	no_action,
 	0,
-	SA_INTERRUPT,
+	SA_INTERRUPT,	/* 表示该中断是快速中断 */
 	NULL
 };
 
+/*
+ *	外设中断初始化，共 16 个中断，编号为 0 - 15，对应于 IDT 表中的中断号为 32 - 47。
+ */
 void init_IRQ(void)
 {
 	int i;
 
 	for (i = 0; i < 16 ; i++)
 		set_intr_gate(0x20+i,bad_interrupt[i]);
+			/*
+			 *	16 个中断先设置一个默认的中断门，后续在合适的地方重新初始化
+			 * 每个中断门，默认的中断门是无效的，中断在使用前必须重新设置中断门。
+			 */
+
 	if (irqaction(2,&ignore_IRQ))
 		printk("Unable to get IRQ2 for cascade\n");
+			/*
+			 *	为 2 号中断绑定中断属性结构，每个外设中断都会有一个中断属性
+			 * 结构，中断属性结构借用的是信号属性的结构。中断在使用前必须为中断
+			 * 绑定对应的中断属性结构。
+			 *
+			 * 	16 个中断信号是通过两个芯片级联的方式实现的，其中从芯片的 INT
+			 * 引脚连接到主芯片的 IR2 引脚上，所以 2 号中断不对应某一个外设中断，
+			 * 系统实际上只有 15 个有效的外设中断，因此需要将 2 号中断忽略。
+			 */
+
 	if (request_irq(13,math_error_irq))
 		printk("Unable to get IRQ13 for math-error handler\n");
+			/* 为 13 号中断绑定中断属性结构，13 号中断是数学协处理器中断。 */
 
 	/* intialize the bottom half routines. */
 	for (i = 0; i < 32; i++) {
