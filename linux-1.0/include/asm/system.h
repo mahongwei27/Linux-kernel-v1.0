@@ -144,6 +144,16 @@ __asm__ __volatile__ ("movw %%dx,%%ax\n\t" \
 	*(gate_addr) = (((base) & 0x0000ffff)<<16) | \
 		((limit) & 0x0ffff); }
 
+/*
+ *	_set_tssldt_desc: 设置 GDT 表中任务对应的 TSS 段和 LDT 段的段描述符:
+ *
+ * 入参: n --- GDT 表中描述符项的偏移值。
+ *	 addr --- 段所在物理内存的基地址，因为 TSS 段在任务的 task_struct 结构中，LDT 段位于内核空间，
+ *		  而内核空间的地址映射是基于偏移量的一对一映射，所以最后生成的段的线性基地址为
+ *		  0xC0000000 + addr。
+ *	 limit --- 段限长，limit = 段大小 - 1，TSS 段和 LDT 段不等长。
+ *	 type --- 描述符中的标志类型，主要用于说明描述符描述的是 TSS 段还是 LDT 段。
+ */
 #define _set_tssldt_desc(n,addr,limit,type) \
 __asm__ __volatile__ ("movw $" #limit ",%1\n\t" \
 	"movw %%ax,%2\n\t" \
@@ -158,7 +168,26 @@ __asm__ __volatile__ ("movw $" #limit ",%1\n\t" \
 	 "m" (*(n+5)), "m" (*(n+6)), "m" (*(n+7)) \
 	)
 
+/*
+ *	set_tss_desc: 在 GDT 表中设置任务的 TSS 段的段描述符。
+ *
+ * 入参: n --- GDT 表中描述符项的偏移值。
+ *	 addr --- 段所在物理内存的基地址。
+ * 传参: 235 --- TSS 段的段限长，TSS 段的最小尺寸是 236(tss_struct 结构中一直到 io_bitmap 结束) 字节，
+ *		 所以段限长 = 236 - 1 = 235 字节。
+ *	 0x89 --- TSS 段的描述符类型。
+ */
 #define set_tss_desc(n,addr) _set_tssldt_desc(((char *) (n)),((int)(addr)),235,"0x89")
+
+/*
+ *	set_ldt_desc: 在 GDT 表中设置任务的 LDT 段的段描述符。
+ *
+ * 入参: n --- GDT 表中描述符项的偏移值。
+ *	 addr --- 段所在物理内存的基地址。
+ *	 size --- desc_struct 结构的个数，每个 desc_struct 结构占 8 字节。
+ * 传参: ((size << 3) - 1) --- LDT 段的段限长，段限长 = 段大小 - 1。
+ *	 0x82 --- LDT 段的描述符类型。
+ */
 #define set_ldt_desc(n,addr,size) \
 	_set_tssldt_desc(((char *) (n)),((int)(addr)),((size << 3) - 1),"0x82")
 

@@ -2,6 +2,10 @@
 #ifndef _LINUX_INTERRUPT_H
 #define _LINUX_INTERRUPT_H
 
+/*
+ *	中断下半部(bottom half)结构，每一个中断下半部都有一个 bh_struct 结构，
+ * routine 是下半部的执行入口，data 是下半部参数。
+ */
 struct bh_struct {
 	void (*routine)(void *);
 	void *data;

@@ -336,12 +336,24 @@ extern int irqaction(unsigned int irq,struct sigaction * sa);
  *  10 - TSS #1
  *  11 - LDT #1
  */
+/*
+ *	第一个任务，也就是任务 0 的 TSS 段和 LDT 段的描述符在 GDT 表中的偏移位置。
+ */
 #define FIRST_TSS_ENTRY 8
 #define FIRST_LDT_ENTRY (FIRST_TSS_ENTRY+1)
+/*
+ *	_TSS(n)，_LDT(n): 计算段选择符的值，根据任务号 n 计算用于选择 GDT 表中该任务的
+ * TSS 段和 LDT 段的段选择符的值。
+ */
 #define _TSS(n) ((((unsigned long) n)<<4)+(FIRST_TSS_ENTRY<<3))
 #define _LDT(n) ((((unsigned long) n)<<4)+(FIRST_LDT_ENTRY<<3))
+/*
+ *	load_TR(n)，load_ldt(n): 将根据任务号 n 得到的段选择符的值加载到 TR 和 LDTR 寄存器中。
+ * TR 和 LDTR 中的选择符用于选择 GDT 表中任务 n 对应的 TSS 段和 LDT 段的描述符。
+ */
 #define load_TR(n) __asm__("ltr %%ax": /* no output */ :"a" (_TSS(n)))
 #define load_ldt(n) __asm__("lldt %%ax": /* no output */ :"a" (_LDT(n)))
+
 #define store_TR(n) \
 __asm__("str %%ax\n\t" \
 	"subl %2,%%eax\n\t" \

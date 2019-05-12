@@ -563,6 +563,9 @@ static void second_overflow(void)
 /*
  * disregard lost ticks for now.. We don't care enough.
  */
+/*
+ *	系统定时器的中断下半部处理函数。
+ */
 static void timer_bh(void * unused)
 {
 	unsigned long mask;
@@ -816,11 +819,29 @@ void sched_init(void)
 	struct desc_struct * p;
 
 	bh_base[TIMER_BH].routine = timer_bh;
+			/* 初始化系统定时器的中断下半部。 */
 	if (sizeof(struct sigaction) != 16)
 		panic("Struct sigaction MUST be 16 bytes");
+
 	set_tss_desc(gdt+FIRST_TSS_ENTRY,&init_task.tss);
 	set_ldt_desc(gdt+FIRST_LDT_ENTRY,&default_ldt,1);
+			/*
+			 *	在 GDT 表中设置任务 0 的 TSS 段和 LDT 段的段描述符。这两个描述符
+			 * 用于描述任务 0 (init_task)的这两个段在线性地址空间中的基地址，段大小
+			 * 等信息。
+			 *
+			 *	任务的 TSS 段是必须的，该段主要用于在任务切换时保存和恢复任务的
+			 * 上下文信息，位于任务的 task_struct 结构中。任务的 LDT 段是非必须的，
+			 * 没有 LDT 段的话，LDT 段描述符设置成 default_ldt，内容是 0，没有实际意义。
+			 */
+
 	set_system_gate(0x80,&system_call);
+			/*
+			 *	system_call 是系统调用的总入口，int 0x80 用于触发系统调用，系统调用
+			 * 触发后，会先进入 sys_call.S 中的 _system_call 处，再执行具体的系统调用
+			 * 处理函数。
+			 */
+
 	p = gdt+2+FIRST_TSS_ENTRY;
 	for(i=1 ; i<NR_TASKS ; i++) {
 		task[i] = NULL;
@@ -829,13 +850,34 @@ void sched_init(void)
 		p->a=p->b=0;
 		p++;
 	}
+			/*
+			 *	将 GDT 表中除了任务 0 以外的所有任务的 TSS 段和 LDT 段的描述符全
+			 * 置 0，这些描述符会在后续创建新任务的时候填充。
+			 */
+
 /* Clear NT, so that we won't have troubles with that later on */
 	__asm__("pushfl ; andl $0xffffbfff,(%esp) ; popfl");
+			/*
+			 *	清除 EFLAGS 中的 NT 位，这样当执行 iret 指令时就不会引起任务切换。
+			 */
+
 	load_TR(0);
 	load_ldt(0);
+			/*
+			 *	将任务 0 的 TSS 段选择符加载到任务寄存器 TR 中，将任务 0 的 LDT
+			 * 段选择符加载到局部描述符表寄存器 LDTR 中，参数 0 是任务号。手动加载
+			 * TR 和 LDTR 只在初始化的时候加载一次，以后 TR 在任务切换的时候自动加载，
+			 * LDTR 根据 TSS 中的 LDT 项自动加载。
+			 */
+
 	outb_p(0x34,0x43);		/* binary, mode 2, LSB/MSB, ch 0 */
 	outb_p(LATCH & 0xff , 0x40);	/* LSB */
 	outb(LATCH >> 8 , 0x40);	/* MSB */
+			/* 初始化定时器，每 10ms 发出一个定时器中断，作为操作系统的节拍定时。 */
 	if (request_irq(TIMER_IRQ,(void (*)(int)) do_timer)!=0)
 		panic("Could not allocate timer IRQ!");
+			/*
+			 *	为定时器中断绑定中断属性结构，定时器中断的处理函数为 do_timer，
+			 * 定时器中断下半部的处理函数在最开始已经设置了，为 timer_bh。
+			 */
 }
