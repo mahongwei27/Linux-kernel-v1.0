@@ -68,6 +68,7 @@ int hard_math = 0;		/* set by boot/head.S */
 int x86 = 0;			/* set by boot/head.S to 3 or 4 */
 int ignore_irq13 = 0;		/* set if exception 16 works */
 int wp_works_ok = 0;		/* set if paging hardware honours WP */ 
+		/* wp_works_ok = 1 表示页写保护功能正常 */
 
 /*
  * Bus types ..

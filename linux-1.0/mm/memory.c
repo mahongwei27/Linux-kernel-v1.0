@@ -41,6 +41,7 @@
 #include <linux/ptrace.h>
 #include <linux/mman.h>
 
+/* high_memory: 内存最高端，分页管理的内存的最高位置。*/
 unsigned long high_memory = 0;
 
 extern unsigned long pg0[1024];		/* page table for 0-4MB for everybody */
@@ -49,7 +50,13 @@ extern void sound_mem_init(void);
 extern void die_if_kernel(char *,struct pt_regs *,long);
 
 int nr_swap_pages = 0;
-int nr_free_pages = 0;
+int nr_free_pages = 0;	/* 内存中空闲页面的数目，随着页面的申请和释放动态变化 */
+/*
+ *	free_page_list: 空闲页面链表的起始位置，初始化后指向物理内存的最后一个页面，
+ * 空闲物理内存页面最开始的 4 字节存放指向下一个空闲页面的指针，所有的空闲页面以单
+ * 链表的形式链接在 free_page_list 上。
+ *	空闲页面的申请和释放都在链表头部操作，这样效率最高。
+ */
 unsigned long free_page_list = 0;
 /*
  * The secondary free_page_list is used for malloc() etc things that
@@ -63,6 +70,10 @@ unsigned long secondary_page_list = 0;
 #define copy_page(from,to) \
 __asm__("cld ; rep ; movsl": :"S" (from),"D" (to),"c" (1024):"cx","di","si")
 
+/*
+ *	mem_map: 指向内存页面管理结构的起始位置。每个内存页面由 2 个字节来管理，
+ * 所有管理结构从 mem_map 指向的位置处依次向后存放。
+ */
 unsigned short * mem_map = NULL;
 
 #define CODE_SPACE(addr,p) ((addr) < (p)->end_code)
@@ -1094,6 +1105,16 @@ unsigned long paging_init(unsigned long start_mem, unsigned long end_mem)
 	return start_mem;	/* 跳过页表所占用的空间 */
 }
 
+/*
+ *	mem_init: 内存初始化，主要完成以下工作
+ *
+ *	1. 初始化内存页面: 所有物理内存按页面管理，开辟内存页面管理结构所需要的空间并按所
+ * 管理的页面的状态填充对应的页面管理结构。最后将空闲页面链接到空闲页面链表 free_page_list
+ * 上，输出内存页面的信息。
+ *
+ *	2. 测试页写保护功能是否正常，并将物理页面 0 置为无效，使其具有读写保护，用于检测
+ * 内核中的空指针引用。
+ */
 void mem_init(unsigned long start_low_mem,
 	      unsigned long start_mem, unsigned long end_mem)
 {
@@ -1102,48 +1123,80 @@ void mem_init(unsigned long start_low_mem,
 	int datapages = 0;
 	unsigned long tmp;
 	unsigned short * p;
-	extern int etext;
+	extern int etext;	/* 内核代码段结束的位置，由链接程序设置 */
 
 	cli();
-	end_mem &= PAGE_MASK;
-	high_memory = end_mem;
+	end_mem &= PAGE_MASK;	/* 内存结束位置对齐到页边界起始处，后面不足一页的部分被丢弃 */
+	high_memory = end_mem;	/* 设置分页管理的内存的最高位置 */
+
 	start_mem +=  0x0000000f;
-	start_mem &= ~0x0000000f;
-	tmp = MAP_NR(end_mem);
-	mem_map = (unsigned short *) start_mem;
+	start_mem &= ~0x0000000f;	/* start_mem 对齐到下一个 16 字节的边界处 */
+	tmp = MAP_NR(end_mem);	/* 获取整个内存对应的页面个数 */
+	mem_map = (unsigned short *) start_mem;	/* 从 start_mem 处开始存放内存页面管理结构 */
 	p = mem_map + tmp;
-	start_mem = (unsigned long) p;
+	start_mem = (unsigned long) p;	/* 跳过内存页面管理结构所占的内存空间 */
+
 	while (p > mem_map)
 		*--p = MAP_PAGE_RESERVED;
+			/* 初始时将所有的内存页面置为已使用状态 */
+
 	start_low_mem = PAGE_ALIGN(start_low_mem);
-	start_mem = PAGE_ALIGN(start_mem);
+	start_mem = PAGE_ALIGN(start_mem);	/* 对齐到下一个页面边界 */
+
 	while (start_low_mem < 0xA0000) {
 		mem_map[MAP_NR(start_low_mem)] = 0;
 		start_low_mem += PAGE_SIZE;
+			/*
+			 *	从 start_low_mem 到 640KB 之间的内存页面管理结构置 0，表示这些页面
+			 * 未使用，start_low_mem 是传入的 low_memory_start，这个值不管哪种情况，都是
+			 * 小于 512KB 的。
+			 */
 	}
 	while (start_mem < end_mem) {
 		mem_map[MAP_NR(start_mem)] = 0;
 		start_mem += PAGE_SIZE;
+			/*
+			 *	从 start_mem 到内存结束位置之间的内存页面全部置为未使用状态，根据
+			 * 最开始的设置，不管哪种情况，start_mem 都是在 1MB 以上的位置。
+			 */
 	}
+	/*
+	 *	上面的两个 while，留下了 640KB - 1MB 之间的页面，这些页面的状态仍然是已使用状态，
+	 * 这些内存是预留给显存和 BIOS 使用的，所以不能当做空闲页面来使用。
+	 */
+
 #ifdef CONFIG_SOUND
 	sound_mem_init();
 #endif
 	free_page_list = 0;
 	nr_free_pages = 0;
+
+	/*
+	 *	for: 扫描整个内存页面，统计页面使用情况，并将未使用的页面以单链表的形式链接
+	 * 在 free_page_list 上。
+	 */
 	for (tmp = 0 ; tmp < end_mem ; tmp += PAGE_SIZE) {
 		if (mem_map[MAP_NR(tmp)]) {
+			/* 内存页面已使用 */
 			if (tmp >= 0xA0000 && tmp < 0x100000)
-				reservedpages++;
+				reservedpages++;	/* 640KB - 1MB 之间的内存页面保留 */
 			else if (tmp < (unsigned long) &etext)
-				codepages++;
+				codepages++;	/* 内核代码所占用的页面个数 */
 			else
-				datapages++;
+				datapages++;	/* 内核数据所占用的页面个数 */
 			continue;
 		}
+
+		/* 页面空闲 */
 		*(unsigned long *) tmp = free_page_list;
 		free_page_list = tmp;
 		nr_free_pages++;
+			/*
+			 *	页面最开始的 4 个字节存放指向下一个空闲页面的指针，初始化后，
+			 * 低端内存的页面位于链表的尾部，链表头部是最高端内存的那个页面。
+			 */
 	}
+
 	tmp = nr_free_pages << PAGE_SHIFT;
 	printk("Memory: %luk/%luk available (%dk kernel code, %dk reserved, %dk data)\n",
 		tmp >> 10,
@@ -1151,15 +1204,44 @@ void mem_init(unsigned long start_low_mem,
 		codepages << (PAGE_SHIFT-10),
 		reservedpages << (PAGE_SHIFT-10),
 		datapages << (PAGE_SHIFT-10));
+
 /* test if the WP bit is honoured in supervisor mode */
+	/*
+	 *	测试页写保护功能是否正常，页面写保护是写时复制的基础。pg0[0] 原来的值是
+	 * 0x00000007，这是一个页表项，该页表项映射的物理内存空间是 0 - 4KB，属性是 7，
+	 * 表示该物理内存页面存在且可读写。
+	 *
+	 *	1. 先将 pg0[0] 指向的物理内存页面的属性设置为只读。
+	 *	2. 刷新 TLB，使 TLB 之前缓存的页目录表及页表失效。这样，下一次地址转换时
+	 * MMU 需要从内存中重新读取页目录表及页表来做转换并重新缓存在 TLB 中。
+	 *	3. 执行一个操作: 向 0 地址处写 0。这时因为物理内存 0 开始的页面的属性已经
+	 * 变更为只读，不可写，所以会产生页写保护异常。
+	 *	4. 处理器转而执行页写保护异常，最后会执行到函数 do_page_fault，在这个函数
+	 * 里有一个分支: if (wp_works_ok < 0 && address == 0 && (error_code & PAGE_PRESENT))，
+	 * 这个分支就是用来处理现在这种情况的，这时会执行 wp_works_ok = 1 和
+	 * pg0[0] = PAGE_SHARED。将页面的属性重新改回可读写，并设置页写保护功能正常标志。
+	 *	5. 页写保护处理结束，重新执行引起页写保护的指令，执行成功。
+	 *	6. 继续向下执行。
+	 */
 	wp_works_ok = -1;
 	pg0[0] = PAGE_READONLY;
 	invalidate();
 	__asm__ __volatile__("movb 0,%%al ; movb %%al,0": : :"ax", "memory");
+
+		/*
+		 *	在此之前，页表项 pg0[0] 指向的物理内存页面，也就是物理内存 0 开始
+		 * 的页面一直是可读写的，现在将其属性清空，页面不存在，从此以后，对于物理
+		 * 地址 0 开始的页面的访问将会引发缺页中断，最后会执行到 do_page_fault，
+		 * 其中有一个分支: if (address < PAGE_SIZE)，专门处理这种情况。
+		 *
+		 *	这就是将物理页面 0 空出来的目的，它具有读写保护，可以检测内核中的
+		 * 空指针引用，这个功能从此处开始正式生效。
+		 */
 	pg0[0] = 0;
 	invalidate();
+
 	if (wp_works_ok < 0)
-		wp_works_ok = 0;
+		wp_works_ok = 0;	/* 页写保护功能异常 */
 	return;
 }
 

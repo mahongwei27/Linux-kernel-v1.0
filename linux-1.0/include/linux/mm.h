@@ -167,8 +167,8 @@ __asm__ __volatile__("movl %%cr3,%%eax\n\tmovl %%eax,%%cr3": : :"ax")
 
 extern unsigned long high_memory;
 
-#define MAP_NR(addr) ((addr) >> PAGE_SHIFT)
-#define MAP_PAGE_RESERVED (1<<15)
+#define MAP_NR(addr) ((addr) >> PAGE_SHIFT)	/* addr 地址所在的页面号 */
+#define MAP_PAGE_RESERVED (1<<15)	/* 页面管理结构中的 bit15 置1，表示该页面保留，已使用。 */
 
 extern unsigned short * mem_map;
 

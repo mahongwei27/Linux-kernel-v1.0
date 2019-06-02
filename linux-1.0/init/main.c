@@ -26,7 +26,7 @@
 
 extern unsigned long * prof_buffer;
 extern unsigned long prof_len;
-/* edata: 内核代码段结束的位置。end: 整个内核模块结束的位置。这两个位置均由链接程序设置 */
+/* edata: 内核数据段结束的位置。end: 整个内核模块结束的位置。这两个位置均由链接程序设置 */
 extern char edata, end;
 extern char *linux_banner;
 asmlinkage void lcall7(void);
@@ -128,6 +128,7 @@ static unsigned long memory_start = 0;	/* After mem_init, stores the */
 					/* amount of free user memory */
 static unsigned long memory_end = 0;	/* 内存的结束位置，页边界对齐，也表示内存的大小。 */
 static unsigned long low_memory_start = 0;
+			/* low_memory_start: 内存分页管理之后，可以作为空闲页面使用的内存的最低位置 */
 
 static char term[21];
 int rows, cols;
@@ -381,7 +382,19 @@ asmlinkage void start_kernel(void)
 #endif
 	if (MOUNT_ROOT_RDONLY)
 		root_mountflags |= MS_RDONLY;
-	if ((unsigned long)&end >= (1024*1024)) {	/* 内核模块的结束位置超过 1MB */
+
+	/*
+	 *	内核的大小不会超过 508KB，如果内核模块的结束位置 end 超过了 1MB，则说明内核
+	 * 使用了压缩引导技术，内核模块将从 1MB 的位置开始。此时 memory_start 将紧跟在内核
+	 * 模块之后，而 0 - 1MB 内的页面最后将作为空闲页面使用，因物理页面 0 用于检测内核的
+	 * 空指针引用，所以最终可以使用的空闲页面将从第二个页面开始，也就是 PAGE_SIZE 所表示
+	 * 的地址处。
+	 *
+	 *	内核模块的结束位置未超过 1MB，则说明内核未使用压缩引导技术，内核模块将从物理
+	 * 页面 1 开始，最大不会超过 512KB，此时设置 memory_start 从 1MB 的位置开始，则内核
+	 * 模块结束位置 end 到 1MB 的空间也将会以页面的方式管理和使用。
+	 */
+	if ((unsigned long)&end >= (1024*1024)) {
 		memory_start = (unsigned long) &end;
 		low_memory_start = PAGE_SIZE;
 	} else {
@@ -389,7 +402,8 @@ asmlinkage void start_kernel(void)
 		low_memory_start = (unsigned long) &end;
 	}
 	low_memory_start = PAGE_ALIGN(low_memory_start);	/* 对齐到下一个 4kB 的边界处 */
-	memory_start = paging_init(memory_start,memory_end);
+
+	memory_start = paging_init(memory_start,memory_end);	/* 内核页表初始化 */
 	if (strncmp((char*)0x0FFFD9, "EISA", 4) == 0)
 		EISA_bus = 1;
 	trap_init();	/* 对系统保留的中断向量的初始化 */
@@ -403,8 +417,8 @@ asmlinkage void start_kernel(void)
 	memory_start += prof_len * sizeof(unsigned long);
 #endif
 	memory_start = kmalloc_init(memory_start,memory_end);
-	memory_start = chr_dev_init(memory_start,memory_end);
-	memory_start = blk_dev_init(memory_start,memory_end);
+	memory_start = chr_dev_init(memory_start,memory_end);	/* 字符设备初始化 */
+	memory_start = blk_dev_init(memory_start,memory_end);	/* 块设备初始化 */
 	sti();
 	calibrate_delay();
 #ifdef CONFIG_INET
@@ -415,7 +429,7 @@ asmlinkage void start_kernel(void)
 #endif
 	memory_start = inode_init(memory_start,memory_end);
 	memory_start = file_table_init(memory_start,memory_end);
-	mem_init(low_memory_start,memory_start,memory_end);
+	mem_init(low_memory_start,memory_start,memory_end);	/* 内存页面初始化 */
 	buffer_init();
 	time_init();
 	floppy_init();
