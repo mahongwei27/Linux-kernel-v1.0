@@ -55,7 +55,7 @@ static struct wait_queue * buffer_wait = NULL;
 
 int nr_buffers = 0;
 int buffermem = 0;
-int nr_buffer_heads = 0;
+int nr_buffer_heads = 0;	/* 系统中已经存在的 struct buffer_head 结构的总个数 */
 static int min_free_pages = 20;	/* nr free pages needed before buffer grows */
 extern int *blksize_size[];
 
@@ -597,6 +597,9 @@ struct buffer_head * breada(dev_t dev,int first, ...)
 /*
  * See fs/inode.c for the weird use of volatile..
  */
+	/*
+	 *	put_unused_buffer_head: 释放一个不再使用的 struct buffer_head 结构。
+	 */
 static void put_unused_buffer_head(struct buffer_head * bh)
 {
 	struct wait_queue * wait;
@@ -604,10 +607,20 @@ static void put_unused_buffer_head(struct buffer_head * bh)
 	wait = ((volatile struct buffer_head *) bh)->b_wait;
 	memset((void *) bh,0,sizeof(*bh));
 	((volatile struct buffer_head *) bh)->b_wait = wait;
+			/* 释放 bh 结构时需要将 bh 结构的 b_wait 保留下来 */
+
 	bh->b_next_free = unused_list;
 	unused_list = bh;
+			/* 将要释放的 bh 结构还回到 unused_list 链表的头部 */
 }
 
+	/*
+	 *	get_more_buffer_heads: 获取更多的 struct buffer_head 结构。从内存中申请一页空闲内存
+	 * 页面，在这个页面上一个接一个的存放 bh 结构，并将这些 bh 结构通过 b_next_free 链接成一个
+	 * 单链表，unused_list 指向单链表的头部。
+	 *
+	 *	无返回值，外面会通过 unused_list 来判断是否有新的 bh 结构补充进来。
+	 */
 static void get_more_buffer_heads(void)
 {
 	int i;
@@ -615,29 +628,54 @@ static void get_more_buffer_heads(void)
 
 	if (unused_list)
 		return;
+			/*
+			 *	unused_list != NULL 说明系统中还有空闲未使用的 struct buffer_head 结构，
+			 * 则直接返回。否则，说明系统中所有的struct buffer_head 结构用完了，则需要重新
+			 * 补充该结构。
+			 */
 
 	if(! (bh = (struct buffer_head*) get_free_page(GFP_BUFFER)))
 		return;
+			/*
+			 *	申请一页空闲内存页面用于存放新的 struct buffer_head 结构。
+			 */
 
 	for (nr_buffer_heads+=i=PAGE_SIZE/sizeof*bh ; i>0; i--) {
 		bh->b_next_free = unused_list;	/* only make link */
 		unused_list = bh++;
 	}
+			/*
+			 *	一个页面上可以存放的 struct buffer_head 结构的个数为
+			 * i = PAGE_SIZE/sizeof(*bh)，系统中已经存在的 bh 结构的总个数 nr_buffer_heads += i。
+			 *
+			 *	for: 将一个页面上的所有 struct buffer_head 结构通过 b_next_free 链接在一起
+			 * 形成一个单链表。页面上第一个 bh 结构的 b_next_free = NULL，unused_list 指向最后
+			 * 一个 bh 结构。
+			 */
 }
 
+	/*
+	 *	get_unused_buffer_head: 获取一个未使用的 struct buffer_head 结构并返回。
+	 */
 static struct buffer_head * get_unused_buffer_head(void)
 {
 	struct buffer_head * bh;
 
 	get_more_buffer_heads();
+			/* 查看系统中是否还有空闲未使用的 struct buffer_head 结构，如果没有则补充 */
+
 	if (!unused_list)
 		return NULL;
+			/* 系统中没有空闲的 bh 结构，且没有补充成功，则获取未使用的 bh 结构失败 */
+
 	bh = unused_list;
 	unused_list = bh->b_next_free;
+			/* 从 unused_list 链表的头部取一个 bh 结构返回，unused_list 指向下一个未使用的 bh 结构 */
 	bh->b_next_free = NULL;
 	bh->b_data = NULL;
 	bh->b_size = 0;
 	bh->b_req = 0;
+			/* 初始化获取到的 bh 结构 */
 	return bh;
 }
 
@@ -647,6 +685,15 @@ static struct buffer_head * get_unused_buffer_head(void)
  * follow the buffers created.  Return NULL if unable to create more
  * buffers.
  */
+	/*
+	 *	create_buffers: 在一个内存页面上创建若干个缓冲区，并将这些缓冲区对应的 bh 结构
+	 * 链接成一个单链表。
+	 *
+	 *	入参: page --- 内存页面基地址
+	 *	      size --- 缓冲区大小  ===>  一个页面上的缓冲区个数 = PAGE_SIZE/size
+	 *
+	 *	返回: 指向该页面上第一个缓冲区对应的 bh 结构的指针，NULL 表示创建失败。
+	 */
 static struct buffer_head * create_buffers(unsigned long page, unsigned long size)
 {
 	struct buffer_head *bh, *head;
@@ -658,10 +705,28 @@ static struct buffer_head * create_buffers(unsigned long page, unsigned long siz
 		bh = get_unused_buffer_head();
 		if (!bh)
 			goto no_grow;
+				/*
+				 *	获取一个未使用的 struct buffer_head 结构，如果此次获取失败，则将
+				 * 之前获取到的 bh 结构全部释放掉。
+				 */
+
 		bh->b_this_page = head;
 		head = bh;
+			/*
+			 *	一个页面上共有 PAGE_SIZE/size = M 个缓冲区，每一个缓冲区都会有一个对应的
+			 * bh 结构来管理，共需要 M 个 bh 结构，这 M 个 bh 结构通过 bh->b_this_page 链接成
+			 * 一个单链表。
+			 *	[ M = PAGE_SIZE/size = 4096/1024 = 4 ]
+			 *
+			 *	第一个缓冲区对应的 bh->b_this_page 指向第二个缓冲区对应的 bh 结构，依次类推，
+			 * 最后一个缓冲区对应的 bh->b_this_page = NULL。
+			 *
+			 *	最终返回的 head 指向该页面上第一个缓冲区对应的 struct buffer_head 结构。
+			 */
+
 		bh->b_data = (char *) (page+offset);
 		bh->b_size = size;
+				/* 初始化该 bh 结构所管理的缓冲区的首地址和缓冲区的大小 */
 	}
 	return head;
 /*
@@ -674,6 +739,7 @@ no_grow:
 		bh = bh->b_this_page;
 		put_unused_buffer_head(head);
 	}
+		/* 循环将已经获取到的 bh 结构全部释放掉 */
 	return NULL;
 }
 
@@ -870,6 +936,8 @@ static int grow_buffers(int pri, int size)
 		printk("VFS: grow_buffers: size = %d\n",size);
 		return 0;
 	}
+			/* 缓冲区大小 size 是 512 的倍数且不能大于页面大小 */
+
 	if(!(page = __get_free_page(pri)))
 		return 0;
 	bh = create_buffers(page, size);
@@ -877,6 +945,11 @@ static int grow_buffers(int pri, int size)
 		free_page(page);
 		return 0;
 	}
+			/*
+			 *	申请一页空闲内存页面，在该页面上创建一些大小为 size 的缓冲区，并获得
+			 * 指向第一个缓冲区对应的 struct buffer_head 结构的指针 bh。
+			 */
+
 	tmp = bh;
 	while (1) {
 		if (free_list) {

@@ -89,6 +89,10 @@ extern unsigned long secondary_page_list;
  * overhead, just use __get_free_page() directly..
  */
 extern unsigned long __get_free_page(int priority);
+	/*
+	 *	get_free_page: 获取一页空闲内存页面并将该页面清 0。返回内存页面基地址，
+	 * 参数 priority 是内存页面分配标志。
+	 */
 extern inline unsigned long get_free_page(int priority)
 {
 	unsigned long page;
@@ -99,6 +103,7 @@ extern inline unsigned long get_free_page(int priority)
 			: /* no outputs */ \
 			:"a" (0),"c" (1024),"D" (page)
 			:"di","cx");
+				/* 内存页面清 0 */
 	return page;
 }
 
@@ -187,6 +192,19 @@ extern unsigned short * mem_map;
 #define PAGE_READONLY	(PAGE_PRESENT | PAGE_USER | PAGE_ACCESSED)
 #define PAGE_TABLE	(PAGE_PRESENT | PAGE_RW | PAGE_USER | PAGE_ACCESSED)	/* 页表的属性 */
 
+	/*
+	 *	物理内存页面的申请标志:
+	 *
+	 *	GFP_BUFFER: 表示为缓冲区申请内存页面，申请过程不阻塞，且只从空闲页面链表中申请，申请不到
+	 *		    则直接返回失败。
+	 *
+	 *	GFP_ATOMIC: 申请不到可用的物理内存页面时，立即返回，从不睡眠。
+	 *
+	 *	GFP_USER: 表示为用户空间的页分配对应的物理内存页面，可以阻塞。
+	 *
+	 *	GFP_KERNEL: 用此标志申请物理内存页时，若暂时不能满足，则进程会睡眠等待，即会引起进程阻塞，
+	 *		    所以不能在不允许睡眠的过程中使用此标志，比如中断上下文等。
+	 */
 #define GFP_BUFFER	0x00
 #define GFP_ATOMIC	0x01
 #define GFP_USER	0x02
