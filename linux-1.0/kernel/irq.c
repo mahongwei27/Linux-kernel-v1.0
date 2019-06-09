@@ -38,7 +38,7 @@
 static unsigned char cache_21 = 0xff;
 static unsigned char cache_A1 = 0xff;
 
-unsigned long intr_count = 0;	/* 中断计数，用于判断中断是否被嵌套。 */
+unsigned long intr_count = 0;	/* 中断计数，用于判断是否在中断中及中断是否被嵌套。 */
 unsigned long bh_active = 0;	/* 中断下半部活跃标志，每一位代表一个中断下半部活跃。 */
 unsigned long bh_mask = 0xFFFFFFFF;
 struct bh_struct bh_base[32]; 	/* 每一个中断下半部对应一个 bh_struct 结构。 */

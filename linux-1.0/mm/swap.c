@@ -52,6 +52,11 @@ extern int shm_swap (int);
  * The following are used to make sure we don't thrash too much...
  * NOTE!! NR_LAST_FREE_PAGES must be a power of 2...
  */
+	/*
+	 *	last_free_pages: 是一个循环数组，用于存储最近分配的 32 个内存页面，这些内存页面都是
+	 * 近期分配的，基于局部性原理，这些页面近期被访问的可能性最大。因此，因内存页面不足而将已分
+	 * 配的页面交换到交换设备上时，这些页面不允许被交换出去。
+	 */
 #define NR_LAST_FREE_PAGES 32
 static unsigned long last_free_pages[NR_LAST_FREE_PAGES] = {0,};
 
@@ -550,17 +555,37 @@ void free_page(unsigned long addr)
  * will make *no* jumps for the normal code. Don't touch unless you
  * know what you are doing.
  */
+	/*
+	 *	从物理内存空闲页面链表中移除一个物理内存页面并将链表中的空闲页面计数减少一个:
+	 *	queue --- 链表的头
+	 *	nr --- 链表中空闲页面的个数
+	 */
 #define REMOVE_FROM_MEM_QUEUE(queue,nr) \
 	cli(); \
 	if ((result = queue) != 0) { \
+			/* 链表头非空，有可用内存页面分配 */	\
 		if (!(result & ~PAGE_MASK) && result < high_memory) { \
+				/* 页起始地址在页边界对齐且未超出分页管理的最高位置，表示页面有效 */	\
 			queue = *(unsigned long *) result; \
+					/*	\
+					 *	当前页面从链表头取下，分配出去，链表头指向下一个页面。	\
+					 */	\
 			if (!mem_map[MAP_NR(result)]) { \
+					/* 正常情况下，位于空闲链表中的页面的共享计数值一定是 0 */	\
 				mem_map[MAP_NR(result)] = 1; \
+						/*	\
+						 *	页面管理结构值置 1，表示页面已使用。这个值也是页面的	\
+						 * 共享计数，表示一个页面可以被多个任务使用。	\
+						 */	\
 				nr--; \
+					/* 链表中空闲页面个数减少一个 */	\
 last_free_pages[index = (index + 1) & (NR_LAST_FREE_PAGES - 1)] = result; \
+		/*	\
+		 *	将该页面加入到最近分配的页面数组中，以防被交换出去。	\
+		 */	\
 				restore_flags(flag); \
 				return result; \
+					/* 将 __get_free_page 函数返回 */	\
 			} \
 			printk("Free page %08lx has mem_map = %d\n", \
 				result,mem_map[MAP_NR(result)]); \
@@ -583,6 +608,10 @@ last_free_pages[index = (index + 1) & (NR_LAST_FREE_PAGES - 1)] = result; \
  * in it). See the above macro which does most of the work, and which is
  * optimized for a fast normal path of execution.
  */
+	/*
+	 *	__get_free_page: 获取一个空闲内存页面，返回页面基地址，参数 priority
+	 * 是内存页面分配标志。
+	 */
 unsigned long __get_free_page(int priority)
 {
 	extern unsigned long intr_count;
@@ -599,14 +628,31 @@ unsigned long __get_free_page(int priority)
 			((unsigned long *)&priority)[-1]);
 		priority = GFP_ATOMIC;
 	}
+			/*
+			 *	中断中不允许睡眠，因此在中断中调用 __get_free_page 分配内存页面时，
+			 * 不能使用可以睡眠的标志，只能使用 GFP_ATOMIC 标志。
+			 */
+
 	save_flags(flag);
 repeat:
 	REMOVE_FROM_MEM_QUEUE(free_page_list,nr_free_pages);
+			/*
+			 *	从空闲页面链表中分配一个页面，若分配成功，则直接返回，否则继续向下
+			 * 执行，表示空闲链表中已无空闲页面可以分配。
+			 */
+
 	if (priority == GFP_BUFFER)
 		return 0;
+			/* 如果是为缓冲区申请内存页面，当没有空闲页面可用时，直接返回失败 */
+
 	if (priority != GFP_ATOMIC)
 		if (try_to_free_page())
 			goto repeat;
+			/*
+			 *	现在已无空闲页面可用，则尝试去释放一些页面，如果释放成功，则重新分配
+			 * 页面，释放页面的过程可能会导致任务阻塞，所以要排除 GFP_ATOMIC 标志。
+			 */
+
 	REMOVE_FROM_MEM_QUEUE(secondary_page_list,nr_secondary_pages);
 	return 0;
 }

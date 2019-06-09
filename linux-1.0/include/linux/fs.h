@@ -142,6 +142,7 @@ struct buffer_head {
 	struct buffer_head * b_next;
 	struct buffer_head * b_prev_free;	/* doubly linked list of buffers */
 	struct buffer_head * b_next_free;
+				/* b_next_free: 指向下一个空闲的 struct buffer_head 结构 */
 	struct buffer_head * b_this_page;	/* circular list of buffers in one page */
 	struct buffer_head * b_reqnext;		/* request queue */
 };
