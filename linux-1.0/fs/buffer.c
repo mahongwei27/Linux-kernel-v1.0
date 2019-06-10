@@ -49,12 +49,16 @@ extern int check_mcd_media_change(int, int);
 static int grow_buffers(int pri, int size);
 
 static struct buffer_head * hash_table[NR_HASH];
+/*
+ *	free_list: 空闲缓冲块链表头指针，指向空闲缓冲块链表的头部。空闲缓冲块链表是由空闲
+ * 缓冲块对应的 bh 结构链接成的双循环链表。
+ */
 static struct buffer_head * free_list = NULL;
 static struct buffer_head * unused_list = NULL;
 static struct wait_queue * buffer_wait = NULL;
 
-int nr_buffers = 0;
-int buffermem = 0;
+int nr_buffers = 0;	/* 系统中缓冲块的总个数 */
+int buffermem = 0;	/* 系统中缓冲区所占用的内存总大小，不包括 bh 结构占用的空间 */
 int nr_buffer_heads = 0;	/* 系统中已经存在的 struct buffer_head 结构的总个数 */
 static int min_free_pages = 20;	/* nr free pages needed before buffer grows */
 extern int *blksize_size[];
@@ -597,9 +601,9 @@ struct buffer_head * breada(dev_t dev,int first, ...)
 /*
  * See fs/inode.c for the weird use of volatile..
  */
-	/*
-	 *	put_unused_buffer_head: 释放一个不再使用的 struct buffer_head 结构。
-	 */
+/*
+ *	put_unused_buffer_head: 释放一个不再使用的 struct buffer_head 结构。
+ */
 static void put_unused_buffer_head(struct buffer_head * bh)
 {
 	struct wait_queue * wait;
@@ -614,13 +618,13 @@ static void put_unused_buffer_head(struct buffer_head * bh)
 			/* 将要释放的 bh 结构还回到 unused_list 链表的头部 */
 }
 
-	/*
-	 *	get_more_buffer_heads: 获取更多的 struct buffer_head 结构。从内存中申请一页空闲内存
-	 * 页面，在这个页面上一个接一个的存放 bh 结构，并将这些 bh 结构通过 b_next_free 链接成一个
-	 * 单链表，unused_list 指向单链表的头部。
-	 *
-	 *	无返回值，外面会通过 unused_list 来判断是否有新的 bh 结构补充进来。
-	 */
+/*
+ *	get_more_buffer_heads: 获取更多的 struct buffer_head 结构。从内存中申请一页空闲内存
+ * 页面，在这个页面上一个接一个的存放 bh 结构，并将这些 bh 结构通过 b_next_free 链接成一个
+ * 单链表，unused_list 指向单链表的头部。
+ *
+ *	无返回值，外面会通过 unused_list 来判断是否有新的 bh 结构补充进来。
+ */
 static void get_more_buffer_heads(void)
 {
 	int i;
@@ -654,9 +658,9 @@ static void get_more_buffer_heads(void)
 			 */
 }
 
-	/*
-	 *	get_unused_buffer_head: 获取一个未使用的 struct buffer_head 结构并返回。
-	 */
+/*
+ *	get_unused_buffer_head: 获取一个未使用的 struct buffer_head 结构并返回。
+ */
 static struct buffer_head * get_unused_buffer_head(void)
 {
 	struct buffer_head * bh;
@@ -675,7 +679,7 @@ static struct buffer_head * get_unused_buffer_head(void)
 	bh->b_data = NULL;
 	bh->b_size = 0;
 	bh->b_req = 0;
-			/* 初始化获取到的 bh 结构 */
+			/* 初始化获取到的 bh 结构，b_next_free 将用作另外的用途。 */
 	return bh;
 }
 
@@ -685,15 +689,15 @@ static struct buffer_head * get_unused_buffer_head(void)
  * follow the buffers created.  Return NULL if unable to create more
  * buffers.
  */
-	/*
-	 *	create_buffers: 在一个内存页面上创建若干个缓冲区，并将这些缓冲区对应的 bh 结构
-	 * 链接成一个单链表。
-	 *
-	 *	入参: page --- 内存页面基地址
-	 *	      size --- 缓冲区大小  ===>  一个页面上的缓冲区个数 = PAGE_SIZE/size
-	 *
-	 *	返回: 指向该页面上第一个缓冲区对应的 bh 结构的指针，NULL 表示创建失败。
-	 */
+/*
+ *	create_buffers: 在一个内存页面上创建若干个缓冲块，并将这些缓冲块对应的 bh 结构
+ * 链接成一个单链表。
+ *
+ *	入参: page --- 内存页面基地址
+ *	      size --- 缓冲块大小  ===>  一个页面上的缓冲块个数 = PAGE_SIZE/size
+ *
+ *	返回: 指向该页面上第一个缓冲块对应的 bh 结构的指针，NULL 表示创建失败。
+ */
 static struct buffer_head * create_buffers(unsigned long page, unsigned long size)
 {
 	struct buffer_head *bh, *head;
@@ -713,20 +717,23 @@ static struct buffer_head * create_buffers(unsigned long page, unsigned long siz
 		bh->b_this_page = head;
 		head = bh;
 			/*
-			 *	一个页面上共有 PAGE_SIZE/size = M 个缓冲区，每一个缓冲区都会有一个对应的
+			 *	一个页面上共有 PAGE_SIZE/size = M 个缓冲块，每一个缓冲块都会有一个对应的
 			 * bh 结构来管理，共需要 M 个 bh 结构，这 M 个 bh 结构通过 bh->b_this_page 链接成
 			 * 一个单链表。
 			 *	[ M = PAGE_SIZE/size = 4096/1024 = 4 ]
 			 *
-			 *	第一个缓冲区对应的 bh->b_this_page 指向第二个缓冲区对应的 bh 结构，依次类推，
-			 * 最后一个缓冲区对应的 bh->b_this_page = NULL。
+			 *	第一个缓冲块对应的 bh->b_this_page 指向第二个缓冲块对应的 bh 结构，依次类推，
+			 * 最后一个缓冲块对应的 bh->b_this_page = NULL。
 			 *
-			 *	最终返回的 head 指向该页面上第一个缓冲区对应的 struct buffer_head 结构。
+			 *	缓冲块与 bh 结构是一一对应的关系，这种关系一旦建立，将永久存续，一个页面上
+			 * 的 M 个缓冲块之间通过缓冲块对应的 bh->b_this_page 链接在一个单链表上。
+			 *
+			 *	最终返回的 head 指向该页面上第一个缓冲块对应的 struct buffer_head 结构。
 			 */
 
 		bh->b_data = (char *) (page+offset);
 		bh->b_size = size;
-				/* 初始化该 bh 结构所管理的缓冲区的首地址和缓冲区的大小 */
+				/* 初始化该 bh 结构所管理的缓冲块的首地址和缓冲块的大小 */
 	}
 	return head;
 /*
@@ -927,6 +934,20 @@ unsigned long bread_page(unsigned long address, dev_t dev, int b[], int size, in
  * Try to increase the number of buffers available: the size argument
  * is used to determine what kind of buffers we want.
  */
+/*
+ *	grow_buffers: 尝试增加系统中可用缓冲块的个数，返回是否成功增加的标志。每调用一次该
+ * 函数，执行成功时系统将增加一个内存页面的缓冲块。
+ *
+ *	入参: pri --- 内存页面申请标志。
+ *	      size --- 缓冲块的大小  ===>  一个页面上的缓冲块个数 = PAGE_SIZE/size
+ *
+ *	1. 申请一页空闲内存页面。
+ *	2. 在这个页面上创建若干个大小为 size 的缓冲块，这些缓冲块通过对应的 bh->b_this_page
+ * 链接成为一个单链表。
+ *	3. 刚创建的缓冲块肯定是空闲的，将这些缓冲块链接到系统的空闲缓冲块链表上，后续系统
+ * 使用缓冲块时将从该链表上获取空闲缓冲块。
+ *	4. 最后通过设置 bh->b_this_page 使得同一个页面上的所有缓冲块形成一个单循环链表。
+ */
 static int grow_buffers(int pri, int size)
 {
 	unsigned long page;
@@ -936,7 +957,7 @@ static int grow_buffers(int pri, int size)
 		printk("VFS: grow_buffers: size = %d\n",size);
 		return 0;
 	}
-			/* 缓冲区大小 size 是 512 的倍数且不能大于页面大小 */
+			/* 缓冲块大小 size 是 512 的倍数且不能大于页面大小 */
 
 	if(!(page = __get_free_page(pri)))
 		return 0;
@@ -946,8 +967,9 @@ static int grow_buffers(int pri, int size)
 		return 0;
 	}
 			/*
-			 *	申请一页空闲内存页面，在该页面上创建一些大小为 size 的缓冲区，并获得
-			 * 指向第一个缓冲区对应的 struct buffer_head 结构的指针 bh。
+			 *	申请一页空闲内存页面，在该页面上创建一些大小为 size 的缓冲块，并获得指向
+			 * 页面上第一个缓冲块对应的 struct buffer_head 结构的指针 bh，后一个缓冲块的 bh
+			 * 结构通过前一个缓冲块 bh 结构的 b_this_page 来访问。
 			 */
 
 	tmp = bh;
@@ -968,8 +990,22 @@ static int grow_buffers(int pri, int size)
 		else
 			break;
 	}
+			/*
+			 *	一个页面上刚初始化好的缓冲块都是空闲的，将这些缓冲块对应的 bh 结构链接到
+			 * 空闲缓冲块链表上，这个链表是一个双循环链表，bh->b_prev_free 指向前一个空闲缓冲
+			 * 块对应的 bh 结构，bh->b_next_free 指向后一个空闲缓冲块对应的 bh 结构。
+			 *
+			 *	链接完成后，free_list 指向链表的头部，也就是页面上最后一个缓冲块对应的 bh
+			 * 结构。nr_buffers 表示系统中缓冲块的总个数。
+			 */
 	tmp->b_this_page = bh;
 	buffermem += PAGE_SIZE;
+			/*
+			 *	空闲缓冲块链表链接完成后，将页面上最后一个缓冲块对应的 bh->b_this_page
+			 * (原来是 NULL) 指向页面上的第一个缓冲块对应的 bh 结构，使同一个页面上的缓冲块
+			 * 形成的单链表变为单循环链表。
+			 *	buffermem 表示系统中缓冲区所占用的内存总大小。
+			 */
 	return 1;
 }
 
@@ -1080,6 +1116,19 @@ void show_buffers(void)
  * but I'm not sure), and programs in the ps package expect it.
  * 					- TYT 8/30/92
  */
+/*
+ *	buffer_init: 系统缓冲区初始化。缓冲区用来缓存外部块设备上的数据，以加快系统访问低速
+ * 块设备的速度。
+ *
+ *	缓冲区由很多个缓冲块组成，每一个缓冲块由唯一对应的一个 struct buffer_head 结构管理，
+ * 缓冲块的大小与要缓存的块设备的块大小相同。
+ *
+ * 	缓冲块位于物理内存页面中，一个物理内存页面上可以有一个或多个缓冲块，一个页面上的缓冲块
+ * 是连续的，但缓冲区中的内存页面基本上是不连续的，缓冲区通过链表的方式来管理缓冲块。
+ *
+ *	系统中的缓冲块的个数不是固定的，刚开始只有一个页面的缓冲块，在使用的过程中会不断向系统
+ * 请求增加缓冲块，系统内存资源紧张时，会回收缓冲块占用的页面，缓冲块的数量也随之减少。
+ */
 void buffer_init(void)
 {
 	int i;
@@ -1088,11 +1137,18 @@ void buffer_init(void)
 		min_free_pages = 200;
 	else
 		min_free_pages = 20;
+
 	for (i = 0 ; i < NR_HASH ; i++)
 		hash_table[i] = NULL;
+
 	free_list = 0;
 	grow_buffers(GFP_KERNEL, BLOCK_SIZE);
 	if (!free_list)
 		panic("VFS: Unable to initialize buffer free list!");
+			/*
+			 *	初始时为缓冲区设置一个页面的空闲缓冲块，并链接在空闲缓冲块链表
+			 * free_list 上，系统在使用缓冲块时，如果空闲缓冲块不够，则会再次调用
+			 * grow_buffers 尝试增加缓冲块的数量。
+			 */
 	return;
 }

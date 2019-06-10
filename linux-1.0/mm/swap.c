@@ -555,11 +555,11 @@ void free_page(unsigned long addr)
  * will make *no* jumps for the normal code. Don't touch unless you
  * know what you are doing.
  */
-	/*
-	 *	从物理内存空闲页面链表中移除一个物理内存页面并将链表中的空闲页面计数减少一个:
-	 *	queue --- 链表的头
-	 *	nr --- 链表中空闲页面的个数
-	 */
+/*
+ *	从物理内存空闲页面链表中移除一个物理内存页面并将链表中的空闲页面计数减少一个:
+ *	queue --- 链表的头
+ *	nr --- 链表中空闲页面的个数
+ */
 #define REMOVE_FROM_MEM_QUEUE(queue,nr) \
 	cli(); \
 	if ((result = queue) != 0) { \
@@ -608,10 +608,10 @@ last_free_pages[index = (index + 1) & (NR_LAST_FREE_PAGES - 1)] = result; \
  * in it). See the above macro which does most of the work, and which is
  * optimized for a fast normal path of execution.
  */
-	/*
-	 *	__get_free_page: 获取一个空闲内存页面，返回页面基地址，参数 priority
-	 * 是内存页面分配标志。
-	 */
+/*
+ *	__get_free_page: 获取一个空闲内存页面，返回页面基地址，参数 priority
+ * 是内存页面分配标志。
+ */
 unsigned long __get_free_page(int priority)
 {
 	extern unsigned long intr_count;

@@ -383,17 +383,17 @@ asmlinkage void start_kernel(void)
 	if (MOUNT_ROOT_RDONLY)
 		root_mountflags |= MS_RDONLY;
 
-	/*
-	 *	内核的大小不会超过 508KB，如果内核模块的结束位置 end 超过了 1MB，则说明内核
-	 * 使用了压缩引导技术，内核模块将从 1MB 的位置开始。此时 memory_start 将紧跟在内核
-	 * 模块之后，而 0 - 1MB 内的页面最后将作为空闲页面使用，因物理页面 0 用于检测内核的
-	 * 空指针引用，所以最终可以使用的空闲页面将从第二个页面开始，也就是 PAGE_SIZE 所表示
-	 * 的地址处。
-	 *
-	 *	内核模块的结束位置未超过 1MB，则说明内核未使用压缩引导技术，内核模块将从物理
-	 * 页面 1 开始，最大不会超过 512KB，此时设置 memory_start 从 1MB 的位置开始，则内核
-	 * 模块结束位置 end 到 1MB 的空间也将会以页面的方式管理和使用。
-	 */
+		/*
+		 *	内核的大小不会超过 508KB，如果内核模块的结束位置 end 超过了 1MB，则说明内核
+		 * 使用了压缩引导技术，内核模块将从 1MB 的位置开始。此时 memory_start 将紧跟在内核
+		 * 模块之后，而 0 - 1MB 内的页面最后将作为空闲页面使用，因物理页面 0 用于检测内核的
+		 * 空指针引用，所以最终可以使用的空闲页面将从第二个页面开始，也就是 PAGE_SIZE 所表示
+		 * 的地址处。
+		 *
+		 *	内核模块的结束位置未超过 1MB，则说明内核未使用压缩引导技术，内核模块将从物理
+		 * 页面 1 开始，最大不会超过 512KB，此时设置 memory_start 从 1MB 的位置开始，则内核
+		 * 模块结束位置 end 到 1MB 的空间也将会以页面的方式管理和使用。
+		 */
 	if ((unsigned long)&end >= (1024*1024)) {
 		memory_start = (unsigned long) &end;
 		low_memory_start = PAGE_SIZE;
@@ -430,7 +430,7 @@ asmlinkage void start_kernel(void)
 	memory_start = inode_init(memory_start,memory_end);
 	memory_start = file_table_init(memory_start,memory_end);
 	mem_init(low_memory_start,memory_start,memory_end);	/* 内存页面初始化 */
-	buffer_init();
+	buffer_init();	/* 系统缓冲区初始化 */
 	time_init();
 	floppy_init();
 	sock_init();

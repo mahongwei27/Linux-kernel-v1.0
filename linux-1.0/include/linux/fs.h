@@ -130,6 +130,11 @@ typedef char buffer_block[BLOCK_SIZE];
 struct buffer_head {
 	char * b_data;			/* pointer to data block (1024 bytes) */
 	unsigned long b_size;		/* block size */
+			/*
+			 *	b_data: 指向该 bh 结构所管理的缓冲块的起始位置，将 bh 结构与缓冲块建立
+			 * 一一对应关系。
+			 *	b_size: 该 bh 结构所管理的缓冲块的大小。
+			 */
 	unsigned long b_blocknr;	/* block number */
 	dev_t b_dev;			/* device (0 = free) */
 	unsigned short b_count;		/* users using this block */
@@ -142,8 +147,20 @@ struct buffer_head {
 	struct buffer_head * b_next;
 	struct buffer_head * b_prev_free;	/* doubly linked list of buffers */
 	struct buffer_head * b_next_free;
-				/* b_next_free: 指向下一个空闲的 struct buffer_head 结构。 */
+			/*
+			 *	b_prev_free 和 b_next_free: 两种情况。
+			 *
+			 *	1. bh 结构空闲，还未与缓冲块建立一一对应关系，则 b_next_free 用于指向下一个
+			 * 空闲的 struct buffer_head 结构，b_prev_free 无用。
+			 *	2. bh 结构已经与缓冲块建立了一一对应关系，则会将 bh 结构加入到空闲缓冲块链表
+			 * 中，b_prev_free 用于指向链表中前一个空闲的缓冲块对应的 bh 结构，b_next_free 用于
+			 * 指向链表中后一个空闲的缓冲块对应的 bh 结构。
+			 */
 	struct buffer_head * b_this_page;	/* circular list of buffers in one page */
+			/*
+			 *	b_this_page: 用于链接一个页面上的所有缓冲块对应的 bh 结构，
+			 * 最终会形成一个单循环链表。
+			 */
 	struct buffer_head * b_reqnext;		/* request queue */
 };
 
