@@ -35,6 +35,11 @@ extern struct timeval xtime;
 #include <linux/mktime.h>
 extern long kernel_mktime(struct mktime * time);
 
+/*
+ *	time_init: 系统时间初始化，从 CMOS 中读取当前的时间值(年月日时分秒)，并用这个时间
+ * 值计算出从 1970 年 1 月 1 日 0 时起到现在所经过的秒数，作为系统当前的时间，保存在 xtime
+ * 中。
+ */
 void time_init(void)
 {
 	struct mktime time;
@@ -60,18 +65,30 @@ void time_init(void)
 		time.mon = CMOS_READ(RTC_MONTH);
 		time.year = CMOS_READ(RTC_YEAR);
 	} while (time.sec != CMOS_READ(RTC_SECONDS));
-	if (!(CMOS_READ(RTC_CONTROL) & RTC_DM_BINARY) || RTC_ALWAYS_BCD)
-	  {
-	    BCD_TO_BIN(time.sec);
-	    BCD_TO_BIN(time.min);
-	    BCD_TO_BIN(time.hour);
-	    BCD_TO_BIN(time.day);
-	    BCD_TO_BIN(time.mon);
-	    BCD_TO_BIN(time.year);
-	  }
-	time.mon--;
+			/*
+			 *	从 CMOS 中读取当前的真实时间到 time 中，因为 CMOS 的访问速度比较慢，
+			 * 为了减小时间误差，在读取了所有的时间值后，最后会重新再读取一次秒值，如果
+			 * 此时秒值发生了变化，则重新读取所有的值，这样就可以把误差控制在 1 秒之内。
+			 */
+
+	if (!(CMOS_READ(RTC_CONTROL) & RTC_DM_BINARY) || RTC_ALWAYS_BCD) {
+		BCD_TO_BIN(time.sec);
+		BCD_TO_BIN(time.min);
+		BCD_TO_BIN(time.hour);
+		BCD_TO_BIN(time.day);
+		BCD_TO_BIN(time.mon);
+		BCD_TO_BIN(time.year);
+	}
+			/* 如果读取到的时间值是 BCD 码，则将其转换为二进制数值 */
+
+	time.mon--;	/* 月份的范围是 0 - 11 */
 	xtime.tv_sec = kernel_mktime(&time);
-      }
+			/*
+			 *	计算从 1970 年 1 月 1 日 0 时起到现在所经过的秒数，作为系统当前的时间，
+			 * 保存在 xtime 中。
+			 */
+}
+
 /* 
  * The timezone where the local system is located.  Used as a default by some
  * programs who obtain this value by using gettimeofday.

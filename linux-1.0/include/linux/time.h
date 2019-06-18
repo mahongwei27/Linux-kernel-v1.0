@@ -1,6 +1,10 @@
 #ifndef _LINUX_TIME_H
 #define _LINUX_TIME_H
 
+/*
+ *	struct timeval: 系统当前时间结构体，表示从 1970 年 1 月 1 日 0 时起到现在
+ * 所经过的秒数和微秒数。
+ */
 struct timeval {
 	long	tv_sec;		/* seconds */
 	long	tv_usec;	/* microseconds */

@@ -38,6 +38,10 @@ static int month[12] = {
 	DAY*(31+29+31+30+31+30+31+31+30+31+30)
 };
 
+/*
+ *	kernel_mktime: 根据传入的时间值 time (年月日时分秒)计算出从 1970 年 1 月 1 日 0 时
+ * 起到 time 之间所经过的秒数并返回该秒数值。
+ */
 long kernel_mktime(struct mktime * time)
 {
 	long res;

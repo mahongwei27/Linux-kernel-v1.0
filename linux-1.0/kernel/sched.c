@@ -38,6 +38,10 @@
  * kernel variables
  */
 long tick = 1000000 / HZ;               /* timer interrupt period */
+/*
+ *	xtime: 保存系统当前的时间，这个时间值表示的是从 1970 年 1 月 1 日 0 时起到现在所
+ * 经过的秒数和微秒数，这个值随着时间的推移而不断变化，表示系统当前的时间在不断更新。
+ */
 volatile struct timeval xtime;		/* The current time */
 int tickadj = 500/HZ;			/* microsecs */
 

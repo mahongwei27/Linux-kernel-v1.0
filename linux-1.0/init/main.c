@@ -431,7 +431,7 @@ asmlinkage void start_kernel(void)
 	memory_start = file_table_init(memory_start,memory_end);
 	mem_init(low_memory_start,memory_start,memory_end);	/* 内存页面初始化 */
 	buffer_init();	/* 系统缓冲区初始化 */
-	time_init();
+	time_init();	/* 系统时间初始化 */
 	floppy_init();
 	sock_init();
 #ifdef CONFIG_SYSVIPC
