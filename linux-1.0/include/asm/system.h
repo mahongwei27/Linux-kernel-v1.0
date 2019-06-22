@@ -3,20 +3,68 @@
 
 #include <linux/segment.h>
 
+/*
+ *	move_to_user_mode: 移动到用户模式运行，用于内核在初始化结束时人工切换到初始进程(任务 0)中去执行，
+ * 也就是从特权级 0 的代码转移到特权级 3 的代码中去运行。所使用的方法是模拟中断调用返回过程，即利用 iret
+ * 指令来实现特权级的变更和堆栈的切换，从而把 CPU 执行控制流转移到初始任务 0 的环境中运行。
+ *
+ *	使用 iret 进行控制权转移的原因: CPU 保护机制允许低特权级的代码通过调用门、中断、陷阱门来调用或者
+ * 转移到高特权级的代码中去运行，反之则不允许，故内核采用了这种模拟 iret 返回低特权级代码的方法。
+ *
+ *	iret 指令执行时，会从当前 SS:ESP 指示的栈中依次弹出 CS:EIP、EFLAGS，CS:EIP 是 iret 指令执行后将要
+ * 执行的代码的位置，EFLAGS 是其对应的标志寄存器的值。因为特权级要从 0 变更到 3，所以还需要弹出
+ * SS:ESP(新的特权级所对应的栈)，因此在执行 iret 指令之前需要先将这些寄存器压入栈中，然后执行 iret 指令。
+ *
+ *
+ *	|---------------| SP0 <--- 执行 move_to_user_mode 之前的栈的位置 [ user_stack 中 ]
+ *	|	|   SS	|
+ *	-----------------
+ *	|      ESP	|	===> 压入栈中的 SS:ESP 指向 SP0，因此 iret 弹出 SS:ESP 之后，栈的位置又
+ *	-----------------	     回到了 SP0，也就是执行 move_to_user_mode 之前的栈的位置，即栈的位置
+ *	|    EFLAGS	|	     在执行 move_to_user_mode 前后未发生变化。
+ *	-----------------
+ *	|	|  CS	|	===> 压入栈中的 CS:EIP 指向 iret 的后面一条指令的位置，因此 iret 弹出
+ *	-----------------	     CS:EIP 之后，将从 iret 指令的后面一条指令处继续向下执行。
+ *	|      EIP	|
+ *	|---------------| SP1 <--- 执行 iret 之前的栈的位置 [ user_stack 中 ]
+ *
+ */
 #define move_to_user_mode() \
-__asm__ __volatile__ ("movl %%esp,%%eax\n\t" \
-	"pushl %0\n\t" \
-	"pushl %%eax\n\t" \
-	"pushfl\n\t" \
-	"pushl %1\n\t" \
-	"pushl $1f\n\t" \
+__asm__ __volatile__ ("movl %%esp,%%eax\n\t" \		/* 当前的 esp(SP0) ===> eax */
+	"pushl %0\n\t" \		/* 任务 0 用户态堆栈段选择符 SS (USER_DS) 入栈，段特权级为 3 */
+	"pushl %%eax\n\t" \		/* 堆栈段指针 ESP 入栈 */
+	"pushfl\n\t" \			/* 标志寄存器 EFLAGS 入栈 */
+	"pushl %1\n\t" \		/* 任务 0 代码段选择符 CS (USER_CS) 入栈，段特权级为 3 */
+	"pushl $1f\n\t" \		/* 代码段指针 EIP (iret 指令后标号 1 的偏移地址) 入栈 */
 	"iret\n" \
+			/*
+			 *	执行 iret 指令前，处理器的特权级为 0，所使用的栈为 head.S 中设置的
+			 * user_stack。执行 iret 指令之后，CS:EIP 指向了 iret 后面一条指令，执行流程
+			 * 并未发生变化，栈的位置回到了执行 move_to_user_mode 之前的位置，也未发生变化。
+			 *
+			 *	唯一发生变化的是: 代码段和堆栈段的特权等级，由 0 变成了 3，即执行流从
+			 * 原来的内核态切换到了用户态的任务 0 中。
+			 *
+			 *	也可以理解为: move_to_user_mode 之前的代码是在任务 0 的内核态执行，之后
+			 * 的代码是在任务 0 的用户态执行，虽然并不是绝对准确。
+			 *
+			 *	这里的 iret 指令并不会造成 CPU 去执行真正的任务切换操作，因为在 sched_init
+			 * 中已将 EFLAGS 中的 NT 标志复位。在 NT 复位时执行 iret 指令不会造成 CPU 执行任务
+			 * 切换操作，因此，任务 0 的执行是人工直接启动的。
+			 */
 	"1:\tmovl %0,%%eax\n\t" \
 	"mov %%ax,%%ds\n\t" \
 	"mov %%ax,%%es\n\t" \
 	"mov %%ax,%%fs\n\t" \
 	"mov %%ax,%%gs" \
+			/*
+			 *	处理器的特权级从 0 到 3 发生了变化，DS、ES、FS、GS 的值将变为无效值，
+			 * CPU 会将这些寄存器清 0，因此在执行 iret 后需要用 USER_DS 重新加载它们，用于
+			 * 选择任务 0 的用户态数据段。
+			 *	CS 和 SS 的值由 iret 引发的弹栈操作来设置。
+			 */
 	: /* no outputs */ :"i" (USER_DS), "i" (USER_CS):"ax")
+
 
 #define sti() __asm__ __volatile__ ("sti": : :"memory")	/* 开启外部硬件中断 */
 #define cli() __asm__ __volatile__ ("cli": : :"memory")	/* 禁止外部硬件中断，但不能禁止使用 INT 指令产生的软件中断 */

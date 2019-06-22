@@ -100,8 +100,19 @@ struct task_struct *last_task_used_math = NULL;
 
 struct task_struct * task[NR_TASKS] = {&init_task, };
 
+/*
+ *	user_stack: 4KB 大小的数组当做栈来使用。系统启动时，会用于内核初始化过程中的内核栈，内核初始化完成，
+ * 执行完 move_to_user_mode 之后，这个数组将用作任务 0 的用户态栈。
+ */
 long user_stack [ PAGE_SIZE>>2 ] ;
 
+/*
+ *	stack_start: 用于设置 SS:ESP。在 head.S 中，由指令 [ lss _stack_start,%esp ] 来设置。
+ *
+ *	设置后:
+ *		SS = KERNEL_DS 用于选择内核数据段，表示栈的位置在内核数据段中。
+ *		ESP 指向数组 user_stack 的尾部，指示栈的起始位置。
+ */
 struct {
 	long * a;
 	short b;

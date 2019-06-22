@@ -476,6 +476,11 @@ asmlinkage void start_kernel(void)
 	system_utsname.machine[1] = '0' + x86;
 	printk(linux_banner);
 
+		/*
+		 *	move_to_user_mode: 移动到用户模式下执行，启动任务 0，将当前的执行流转移到任务 0 的
+		 * 用户态模式下继续执行。
+		 *	在此之前，处理器的特权等级为 0，在此之后，处理器的特权等级为 3。
+		 */
 	move_to_user_mode();
 	if (!fork())		/* we count on this going ok */
 		init();
