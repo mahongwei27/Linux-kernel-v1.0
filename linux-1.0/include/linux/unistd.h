@@ -5,7 +5,9 @@
  * This file contains the system call numbers and the syscallX
  * macros
  */
-
+/*
+ *	系统调用号，用作系统调用函数表 sys_call_table[] 中的索引值。
+ */
 #define __NR_setup		  0	/* used only by init, to get system going */
 #define __NR_exit		  1
 #define __NR_fork		  2
@@ -145,84 +147,155 @@
 extern int errno;
 
 /* XXX - _foo needs to be __foo, while __NR_bar could be _NR_bar. */
+
+/*
+ *	定义系统调用嵌入式汇编宏函数。
+ *
+ *	1. ##是连字符，用于将前后两个字符串连接在一起变成一个字符串，__NR_##name 在预处理阶段的宏定义
+ * 替换时先转换为 __NR_name，其中 name 是系统调用名，__NR_name 再被对应的宏定义替换，变成系统调用号。
+ *	例如 fork 系统调用 ===> __NR_##fork ===> __NR_fork ===> 2，表示 fork 的系统调用号是 2。
+ *
+ *	2. "int $0x80" 指令触发系统调用，随即处理器执行系统调用异常(中断)，当前的流程被暂停在 "int $0x80"
+ * 指令的后一条语句 [ if (__res >= 0) ] 处，系统调用返回后从此处继续向下执行。
+ *
+ *	3. 系统调用指令 "int $0x80" 使得处理器的特权级由 3 切换为 0，使用的栈由特权级 3 对应的栈切换为
+ * 特权级 0 对应的栈。
+ *	即对于当前进程来讲，进程由用户态陷入内核态，处理器使用的栈由进程的用户态栈变更为进程的内核态栈。
+ *
+ *	4. 不管哪种类型的系统调用，传给系统调用的第一个参数都是系统调用号 __NR_##name，通过 eax 寄存器
+ * 传递这个系统调用号，后续处理器将根据系统调用号执行对应的系统调用处理函数。
+ *	系统调用只有一个返回值，通过 eax 寄存器返回这个值，eax >= 0 表示系统调用执行成功，eax < 0 表示
+ * 系统调用执行失败，这个返回值最终会被放入变量 __res 中。
+ *
+ *	5. 若系统调用执行失败，则对应的错误号会被保存在 errno [ errno = -__res ] 中，系统调用嵌入式汇编
+ * 宏函数将会返回 -1，进程若想得知具体的错误原因，需要通过 errno 确定。
+ *	若系统调用执行成功，宏函数直接将系统调用的返回值返回。
+ *
+ *	6. 0x80 号中断对应的中断处理函数为 system_call，其实现位于 sys_call.S 中的 _system_call 处。
+ */
+
+
+/*
+ *	_syscall0: 不带参数的系统调用宏函数 type name(void)。
+ */
 #define _syscall0(type,name) \
 type name(void) \
 { \
-long __res; \
-__asm__ volatile ("int $0x80" \
-	: "=a" (__res) \
-	: "0" (__NR_##name)); \
-if (__res >= 0) \
-	return (type) __res; \
-errno = -__res; \
-return -1; \
+	long __res; \
+	__asm__ volatile ("int $0x80" \		/* 触发执行系统调用 system_call，当前流程被中断打断 */
+			: "=a" (__res) \
+			: "0" (__NR_##name)); \
+					/*
+					 *	output: 系统调用只有一个返回值，会被放入 eax 寄存器中，
+					 * 最终代码返回时 eax 中的值会被放入变量 __res 中。
+					 *
+					 *	input: 传给系统调用的第一个参数是系统调用号 __NR_##name，
+					 * 该值将被放入 eax 寄存器中传递。
+					 */
+	if (__res >= 0) \
+		return (type) __res; \		/* 系统调用执行成功 */
+	errno = -__res; \
+	return -1; \				/* 系统调用执行失败 */
 }
 
+/*
+ *	_syscall1: 带一个参数的系统调用宏函数 type name(atype a)。
+ */
 #define _syscall1(type,name,atype,a) \
 type name(atype a) \
 { \
-long __res; \
-__asm__ volatile ("int $0x80" \
-	: "=a" (__res) \
-	: "0" (__NR_##name),"b" ((long)(a))); \
-if (__res >= 0) \
-	return (type) __res; \
-errno = -__res; \
-return -1; \
+	long __res; \
+	__asm__ volatile ("int $0x80" \
+			: "=a" (__res) \
+			: "0" (__NR_##name),"b" ((long)(a))); \
+					/*
+					 *	input: 宏函数的参数 a 将通过 ebx 寄存器传递。
+					 */
+	if (__res >= 0) \
+		return (type) __res; \
+	errno = -__res; \
+	return -1; \
 }
 
+/*
+ *	_syscall1: 带两个参数的系统调用宏函数 type name(atype a, btype b)。
+ */
 #define _syscall2(type,name,atype,a,btype,b) \
 type name(atype a,btype b) \
 { \
-long __res; \
-__asm__ volatile ("int $0x80" \
-	: "=a" (__res) \
-	: "0" (__NR_##name),"b" ((long)(a)),"c" ((long)(b))); \
-if (__res >= 0) \
-	return (type) __res; \
-errno = -__res; \
-return -1; \
+	long __res; \
+	__asm__ volatile ("int $0x80" \
+			: "=a" (__res) \
+			: "0" (__NR_##name),"b" ((long)(a)),"c" ((long)(b))); \
+					/*
+					 *	input: 宏函数的参数 a、b 将依次通过 ebx、ecx 寄存器传递。
+					 */
+	if (__res >= 0) \
+		return (type) __res; \
+	errno = -__res; \
+	return -1; \
 }
 
+/*
+ *	_syscall1: 带三个参数的系统调用宏函数 type name(atype a, btype b, ctype c)。
+ */
 #define _syscall3(type,name,atype,a,btype,b,ctype,c) \
 type name(atype a,btype b,ctype c) \
 { \
-long __res; \
-__asm__ volatile ("int $0x80" \
-	: "=a" (__res) \
-	: "0" (__NR_##name),"b" ((long)(a)),"c" ((long)(b)),"d" ((long)(c))); \
-if (__res>=0) \
-	return (type) __res; \
-errno=-__res; \
-return -1; \
+	long __res; \
+	__asm__ volatile ("int $0x80" \
+			: "=a" (__res) \
+			: "0" (__NR_##name),"b" ((long)(a)),"c" ((long)(b)),"d" ((long)(c))); \
+					/*
+					 *	input: 宏函数的参数 a、b、c 将依次通过 ebx、ecx、edx
+					 * 寄存器传递。
+					 */
+	if (__res>=0) \
+		return (type) __res; \
+	errno=-__res; \
+	return -1; \
 }
 
+/*
+ *	_syscall1: 带四个参数的系统调用宏函数 type name(atype a, btype b, ctype c, dtype d)。
+ */
 #define _syscall4(type,name,atype,a,btype,b,ctype,c,dtype,d) \
 type name (atype a, btype b, ctype c, dtype d) \
 { \
-long __res; \
-__asm__ volatile ("int $0x80" \
-	: "=a" (__res) \
-	: "0" (__NR_##name),"b" ((long)(a)),"c" ((long)(b)), \
-	  "d" ((long)(c)),"S" ((long)(d))); \
-if (__res>=0) \
-	return (type) __res; \
-errno=-__res; \
-return -1; \
+	long __res; \
+	__asm__ volatile ("int $0x80" \
+			: "=a" (__res) \
+			: "0" (__NR_##name),"b" ((long)(a)),"c" ((long)(b)), \
+			  "d" ((long)(c)),"S" ((long)(d))); \
+					/*
+					 *	input: 宏函数的参数 a、b、c、d、将依次通过
+					 * ebx、ecx、edx、esi 寄存器传递。
+					 */
+	if (__res>=0) \
+		return (type) __res; \
+	errno=-__res; \
+	return -1; \
 }
 
+/*
+ *	_syscall1: 带五个参数的系统调用宏函数 type name(atype a, btype b, ctype c, dtype d, etype e)。
+ */
 #define _syscall5(type,name,atype,a,btype,b,ctype,c,dtype,d,etype,e) \
 type name (atype a,btype b,ctype c,dtype d,etype e) \
 { \
-long __res; \
-__asm__ volatile ("int $0x80" \
-	: "=a" (__res) \
-	: "0" (__NR_##name),"b" ((long)(a)),"c" ((long)(b)), \
-	  "d" ((long)(c)),"S" ((long)(d)),"D" ((long)(e))); \
-if (__res>=0) \
-	return (type) __res; \
-errno=-__res; \
-return -1; \
+	long __res; \
+	__asm__ volatile ("int $0x80" \
+			: "=a" (__res) \
+			: "0" (__NR_##name),"b" ((long)(a)),"c" ((long)(b)), \
+			  "d" ((long)(c)),"S" ((long)(d)),"D" ((long)(e))); \
+					/*
+					 *	input: 宏函数的参数 a、b、c、d、e 将依次通过
+					 * ebx、ecx、edx、esi、edi 寄存器传递。
+					 */
+	if (__res>=0) \
+		return (type) __res; \
+	errno=-__res; \
+	return -1; \
 }
 
 #endif /* _LINUX_UNISTD_H */
