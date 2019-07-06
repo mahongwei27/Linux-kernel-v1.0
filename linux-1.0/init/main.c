@@ -26,9 +26,16 @@
 
 extern unsigned long * prof_buffer;
 extern unsigned long prof_len;
-/* edata: 内核数据段结束的位置。end: 整个内核模块结束的位置。这两个位置均由链接程序设置 */
+/*
+ *	edata: 内核数据段结束的位置。
+ *	end:   整个内核模块结束的位置。这两个位置均由链接程序设置。
+ */
 extern char edata, end;
 extern char *linux_banner;
+/*
+ *	default_ldt: 调用门描述符结构。
+ *	lcall7: 调用门对应的中断处理程序的地址。是 sys_call.S 中的 _lcall7。
+ */
 asmlinkage void lcall7(void);
 struct desc_struct default_ldt;
 
@@ -368,6 +375,7 @@ asmlinkage void start_kernel(void)
  * enable them
  */
 	set_call_gate(&default_ldt,lcall7);
+			/* 设置调用门，Linux 内核并不使用调用门，设置调用门只是为了兼容某些处理器 */
  	ROOT_DEV = ORIG_ROOT_DEV;
  	drive_info = DRIVE_INFO;
  	screen_info = SCREEN_INFO;

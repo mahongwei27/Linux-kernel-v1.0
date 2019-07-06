@@ -90,6 +90,9 @@ extern void mem_use(void);
 extern int timer_interrupt(void);
 asmlinkage int system_call(void);
 
+/*
+ *	init_kernel_stack: 4KB，任务 0 (init_task) 的内核态栈，任务 0 的用户态栈是 user_stack。
+ */
 static unsigned long init_kernel_stack[1024];
 struct task_struct init_task = INIT_TASK;
 
