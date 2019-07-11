@@ -66,8 +66,14 @@ __asm__ __volatile__ ("movl %%esp,%%eax\n\t" \		/* 当前的 esp(SP0) ===> eax */
 	: /* no outputs */ :"i" (USER_DS), "i" (USER_CS):"ax")
 
 
-#define sti() __asm__ __volatile__ ("sti": : :"memory")	/* 开启外部硬件中断 */
-#define cli() __asm__ __volatile__ ("cli": : :"memory")	/* 禁止外部硬件中断，但不能禁止使用 INT 指令产生的软件中断 */
+/*
+ *	sti(): 开启处理器响应外部硬件中断请求功能。
+ *
+ *	cli(): 关闭处理器响应外部硬件中断请求功能，但外部硬件中断仍可正常产生，只是处理器不响应而已。
+ * cli 指令只对外部硬件中断有效，不能禁止使用 INT 指令产生的软件中断。
+ */
+#define sti() __asm__ __volatile__ ("sti": : :"memory")	/* 开中断 */
+#define cli() __asm__ __volatile__ ("cli": : :"memory")	/* 关中断 */
 #define nop() __asm__ __volatile__ ("nop")		/* 空操作 */
 
 /*
@@ -92,11 +98,15 @@ extern inline int tas(char * m)
 	return res;
 }
 
-/* 将标志寄存器 EFLAGS 中的值保存到 x 中。 */
+/*
+ *	save_flags(x): 将标志寄存器 EFLAGS 中的值保存到 x 中。
+ */
 #define save_flags(x) \
 __asm__ __volatile__("pushfl ; popl %0":"=r" (x): /* no input */ :"memory")
 
-/* 将 x 中的值恢复到标志寄存器 EFLAGS 中。 */
+/*
+ *	restore_flags(x): 将 x 中的值恢复到标志寄存器 EFLAGS 中。
+ */
 #define restore_flags(x) \
 __asm__ __volatile__("pushl %0 ; popfl": /* no output */ :"r" (x):"memory")
 

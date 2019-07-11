@@ -35,6 +35,15 @@
 
 #define CR0_NE 32
 
+/*
+ *	cache_21: 8 位，每一位代表主 8259A 芯片上的一个中断的请求状态: 1 表示中断请求被屏蔽，
+ * 中断控制器不能发出该中断的中断请求信号。0 表示中断请求被允许，中断控制器可以发出该中断的
+ * 中断请求信号。
+ *
+ *	cache_A1: 8 位，每一位代表从 8259A 芯片上的一个中断的请求状态，状态表示与 cache_21 一致。
+ *
+ *	初始时，cache_21 和 cache_A1 都是 0xFF，表示所有中断的中断请求信号处于屏蔽状态。
+ */
 static unsigned char cache_21 = 0xff;
 static unsigned char cache_A1 = 0xff;
 
@@ -43,6 +52,10 @@ unsigned long bh_active = 0;	/* 中断下半部活跃标志，每一位代表一个中断下半部活跃
 unsigned long bh_mask = 0xFFFFFFFF;
 struct bh_struct bh_base[32]; 	/* 每一个中断下半部对应一个 bh_struct 结构。 */
 
+/*
+ *	disable_irq: 屏蔽中断号 irq_nr 对应的外部硬件中断，使中断控制器不能发出该中断的中断请求信号，
+ * 其它中断的中断请求信号不受影响，处理器也可正常响应其它中断的中断请求信号。
+ */
 void disable_irq(unsigned int irq_nr)
 {
 	unsigned long flags;
@@ -63,6 +76,10 @@ void disable_irq(unsigned int irq_nr)
 	restore_flags(flags);
 }
 
+/*
+ *	enable_irq: 使能中断号 irq_nr 对应的外部硬件中断，使中断控制器可以发出该中断的中断请求信号，
+ * 其它中断的中断请求信号不受影响。
+ */
 void enable_irq(unsigned int irq_nr)
 {
 	unsigned long flags;
@@ -126,6 +143,11 @@ bad_bh:
  * flag when installing a handler. Finally, one "bad interrupt" handler, that
  * is used when no handler is present.
  */
+/*
+ *	使用宏 BUILD_IRQ 实现 16 个中断的三种类型的中断处理函数，分别是普通中断、
+ * 快速中断和无效中断。
+ *	实现后这里每个中断都有 3 个函数，共有 48 个函数。
+ */
 BUILD_IRQ(FIRST,0,0x01)
 BUILD_IRQ(FIRST,1,0x02)
 BUILD_IRQ(FIRST,2,0x04)
@@ -146,6 +168,9 @@ BUILD_IRQ(SECOND,15,0x80)
 /*
  * Pointers to the low-level handlers: first the general ones, then the
  * fast ones, then the bad ones.
+ */
+/*
+ *	这三个数组里存放的是上面用 BUILD_IRQ 宏实现的 48 个函数的地址。
  */
 static void (*interrupt[16])(void) = {
 	IRQ0_interrupt, IRQ1_interrupt, IRQ2_interrupt, IRQ3_interrupt,
@@ -182,10 +207,10 @@ static void (*bad_interrupt[16])(void) = {
 /*
  *	16 个外设中断的中断属性结构，每个中断属性结构中:
  *
- * sa_handler:	表示具体的中断处理函数。
- * sa_mask:	表示中断对应的中断属性结构是否被安装。1 = 已安装，0 = 未安装。
- * sa_flags:	表示该中断是快速中断还是普通中断。SA_INTERRUPT = 快速中断，0 = 普通中断。
- * sa_restorer:	未使用，无效。
+ *	sa_handler:	表示具体的中断处理函数。
+ *	sa_mask:	表示中断对应的中断属性结构是否被安装。1 = 已安装，0 = 未安装。
+ *	sa_flags:	表示该中断是快速中断还是普通中断。SA_INTERRUPT = 快速中断，0 = 普通中断。
+ *	sa_restorer:	未使用，无效。
  */
 static struct sigaction irq_sigaction[16] = {
 	{ NULL, 0, 0, NULL }, { NULL, 0, 0, NULL },
