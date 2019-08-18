@@ -892,7 +892,10 @@ void sched_init(void)
 	outb_p(0x34,0x43);		/* binary, mode 2, LSB/MSB, ch 0 */
 	outb_p(LATCH & 0xff , 0x40);	/* LSB */
 	outb(LATCH >> 8 , 0x40);	/* MSB */
-			/* 初始化定时器，每 10ms 发出一个定时器中断，作为操作系统的节拍定时。 */
+			/*
+			 *	初始化定时器，每 10ms 发出一个定时器中断，作为操作系统的时钟节拍。
+			 * 也就是操作系统的滴答(tick)，即 1 tick = 10ms。
+			 */
 	if (request_irq(TIMER_IRQ,(void (*)(int)) do_timer)!=0)
 		panic("Could not allocate timer IRQ!");
 			/*
