@@ -492,6 +492,10 @@ asmlinkage void start_kernel(void)
 	move_to_user_mode();
 	if (!fork())		/* we count on this going ok */
 		init();
+			/*
+			 *	任务 0 通过 fork 系统调用(sys_fork)创建任务 1。此后，任务 0 将作为 idle 任务
+			 * 存在，任务 1 就是系统的 init 进程。
+			 */
 /*
  * task[0] is meant to be used as an "idle" task: it may not sleep, but
  * it might do some general things like count free pages or it could be

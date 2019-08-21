@@ -301,7 +301,8 @@ struct tss_struct {
 };
 
 /*
- *	task_struct: 任务控制块，每个任务都由一个唯一的 task_struct 结构来管理。
+ *	task_struct: 任务(进程)控制块，每个任务都由一个唯一的 task_struct 结构来管理。
+ * 任务和进程的概念是通用的。
  */
 struct task_struct {
 /* these are hardcoded - don't touch */
@@ -361,6 +362,14 @@ struct task_struct {
 	unsigned long arg_start, arg_end, env_start, env_end;
 	int pid,pgrp,session,leader;
 	int	groups[NGROUPS];
+			/*
+			 *	pid: 进程号。
+			 *	pgrp: 进程组号。
+			 *	session: 会话号。
+			 *	leader: 当前进程是否是会话首领进程。
+			 *	groups[NGROUPS]: 当前进程所属组号，一个进程可以属于多个进程组，一个
+			 * 进程最多可以属于 NGROUPS 个进程组。
+			 */
 	/* 
 	 * pointers to (original) parent process, youngest child, younger sibling,
 	 * older sibling, respectively.  (p->father can be replaced with 
@@ -385,6 +394,14 @@ struct task_struct {
 	unsigned long it_real_value, it_prof_value, it_virt_value;
 	unsigned long it_real_incr, it_prof_incr, it_virt_incr;
 	long utime,stime,cutime,cstime,start_time;
+			/*
+			 *	utime: 任务的用户态运行时间，单位为 tick。
+			 *	stime: 任务的内核态运行时间，单位为 tick。
+			 *	cutime: 任务的所有子任务的用户态运行时间，单位为 tick。
+			 *	cstime: 任务的所有子任务的内核态运行时间，单位为 tick。
+			 *	start_time: 任务开始运行的时间，这个时间是相对于系统启动的时间，
+			 * 也就是当前 jiffies 的值，单位为 tick。
+			 */
 	unsigned long min_flt, maj_flt;
 	unsigned long cmin_flt, cmaj_flt;
 	struct rlimit rlim[RLIM_NLIMITS]; 

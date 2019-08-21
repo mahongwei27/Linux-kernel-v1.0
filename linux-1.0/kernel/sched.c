@@ -94,13 +94,34 @@ asmlinkage int system_call(void);
  *	init_kernel_stack: 4KB，任务 0 (init_task) 的内核态栈，任务 0 的用户态栈是 user_stack。
  */
 static unsigned long init_kernel_stack[1024];
+/*
+ *	init_task: 任务 0 的 task_struct 结构，任务 0 是系统中最原始的第一个任务，也是系统中
+ * 唯一一个人工创建的任务，后续任务的 task_struct 结构会在 fork 时申请空闲页面来存放，任务 0
+ * 的 task_struct 结构需要手动设置。
+ */
 struct task_struct init_task = INIT_TASK;
 
+/*
+ *	jiffies: 系统的滴答(tick)计数值，表示从系统启动到现在的 tick 数，系统初始化时设置滴答周期
+ * 为 10ms，每隔 10ms jiffies 的值会加 1。
+ */
 unsigned long volatile jiffies=0;
 
+/*
+ *	current: 永远指向当前正在运行的任务，初始时系统中运行的任务为 init_task。
+ *	last_task_used_math: 指向最后一个使用数学协处理器的任务。
+ */
 struct task_struct *current = &init_task;
 struct task_struct *last_task_used_math = NULL;
 
+/*
+ *	task[NR_TASKS]: 任务指针数组，每个元素指向一个任务的 task_struct 结构，任务的最大个数为 NR_TASKS，
+ * 系统创建一个任务时，必须先要从 task 数组中获取一个空闲的元素。当 task 数组中的所有元素都用完时，系统将
+ * 无法再创建出新的任务。
+ *
+ *	task 数组的下标就是任务的任务号，任务号的范围为 0 -> NR_TASKS - 1。任务号与进程号不同，进程号由
+ * 变量 last_pid 给出。
+ */
 struct task_struct * task[NR_TASKS] = {&init_task, };
 
 /*
