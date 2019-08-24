@@ -164,8 +164,8 @@ extern int do_munmap(unsigned long, size_t);
 
 /*
  * 	invalidate: 刷新 TLB: 用 mov 指令重新加载 CR3 会刷新 TLB。刷新 TLB 会使得
- * 缓存在 TLB 中的页目录表和页表失效，下次转换时需从内存中重新加载并缓存页目录表
- * 和页表。
+ * 缓存在 TLB 中的线性地址到物理地址的转换关系失效，下次转换时需从内存中重新读取
+ * 页目录表和页表完成转换并将新的转换关系重新缓存在 TLB 中。
  */
 #define invalidate() \
 __asm__ __volatile__("movl %%cr3,%%eax\n\tmovl %%eax,%%cr3": : :"ax")
