@@ -41,7 +41,9 @@
 #include <linux/ptrace.h>
 #include <linux/mman.h>
 
-/* high_memory: 内存最高端，分页管理的内存的最高位置。*/
+/*
+ *	high_memory: 内存最高端，分页管理的内存的最高位置。
+ */
 unsigned long high_memory = 0;
 
 extern unsigned long pg0[1024];		/* page table for 0-4MB for everybody */
@@ -50,7 +52,10 @@ extern void sound_mem_init(void);
 extern void die_if_kernel(char *,struct pt_regs *,long);
 
 int nr_swap_pages = 0;
-int nr_free_pages = 0;	/* 内存中空闲页面的数目，随着页面的申请和释放动态变化 */
+/*
+ *	nr_free_pages: 内存中空闲页面的数目，随着页面的申请和释放动态变化。
+ */
+int nr_free_pages = 0;
 /*
  *	free_page_list: 空闲页面链表的起始位置，初始化后指向物理内存的最后一个页面，
  * 空闲物理内存页面最开始的 4 字节存放指向下一个空闲页面的指针，所有的空闲页面以单
@@ -90,34 +95,83 @@ void oom(struct task_struct * task)
 	send_sig(SIGKILL,task,1);
 }
 
+/*
+ *	free_one_table: 释放一个页表及页表项指向的所有物理内存页面。
+ *
+ *	入参: 指向该页表对应的页目录项的指针。
+ */
 static void free_one_table(unsigned long * page_dir)
 {
 	int j;
 	unsigned long pg_table = *page_dir;
+			/*
+			 *	获取页目录项的值。页目录项的高 20 bit 是该页目录项指向的页表的基地址
+			 * 低 12 bit 是页表的属性。
+			 */
 	unsigned long * page_table;
 
 	if (!pg_table)
 		return;
+			/*
+			 *	页目录项的值为空，说明该页目录项没有对应的页表存在。
+			 */
 	*page_dir = 0;
+			/*
+			 *	将页目录表中的页目录项的值清空，断开页目录项与页表的连接。
+			 */
 	if (pg_table >= high_memory || !(pg_table & PAGE_PRESENT)) {
 		printk("Bad page table: [%p]=%08lx\n",page_dir,pg_table);
 		return;
 	}
+			/*
+			 *	要释放的页表已经超出了内存最高端，或者页表的属性显示页表不存在，这种
+			 * 状态下的页表是一个异常的页表，无法释放。
+			 */
 	if (mem_map[MAP_NR(pg_table)] & MAP_PAGE_RESERVED)
 		return;
+			/*
+			 *	页表所占用的物理内存页面是系统保留的页面，这种类型的页面不能释放。
+			 */
+
 	page_table = (unsigned long *) (pg_table & PAGE_MASK);
+			/*
+			 *	page_table: 指向页表中的第一个页表项。
+			 */
+	/*
+	 *	for: 循环扫描一个页表中的所有页表项，对每一个页表项，释放该页表项
+	 * 指向的物理内存页面。
+	 */
 	for (j = 0 ; j < PTRS_PER_PAGE ; j++,page_table++) {
 		unsigned long pg = *page_table;
-		
+				/*
+				 *	获取页表项的值，页表项的高 20 bit 是该页表项指向的物理内存
+				 * 页面的基地址，低 12 bit 是物理内存页面的属性。
+				 */
 		if (!pg)
 			continue;
+				/*
+				 *	页表项的值为 0，说明该页表项没有指向的物理内存页面存在，则
+				 * 继续扫描下一个页表项。
+				 */
 		*page_table = 0;
+				/*
+				 *	将页表中的页表项的值清空，断开页表项与物理内存页面的连接。
+				 */
 		if (pg & PAGE_PRESENT)
 			free_page(PAGE_MASK & pg);
 		else
 			swap_free(pg);
+				/*
+				 *	如果物理内存页面的属性显示物理内存页面存在，则直接释放该页面，
+				 * 否则说明该页表项指向的物理内存页面位于交换设备中，则从交换设备中
+				 * 释放该页面。
+				 */
 	}
 	free_page(PAGE_MASK & pg_table);
+			/*
+			 *	页表中的所有页表项指向的物理内存页面都已经释放完了，最后释放页表占用
+			 * 的物理内存页面。
+			 */
 }
 
 /*
@@ -126,6 +180,16 @@ static void free_one_table(unsigned long * page_dir)
  * unlike 'free_page_tables()', this function still leaves a valid
  * page-table-tree in memory: it just removes the user pages. The two
  * functions are similar, but there is a fundamental difference.
+ */
+/*
+ *	clear_page_tables: 清除任务的用户级页表。释放一个任务的用户空间对应的页表及页表项
+ * 指向的物理内存页面，保留任务的页目录表、内核空间对应的页表及内核空间所占用的物理内存页面。
+ *
+ *	本函数是 execve() 所必需的，与 free_page_tables 不同，本函数执行完后，任务在内存中
+ * 仍然保留一个有效的页表树，只是用户空间的那部分页表及页面不存在了。free_page_tables 执行
+ * 完后，任务的整个页表树将不复存在。
+ *
+ *	入参: 指向要清除页表的那个任务的 task_struct 结构的指针。
  */
 void clear_page_tables(struct task_struct * tsk)
 {
@@ -137,12 +201,35 @@ void clear_page_tables(struct task_struct * tsk)
 		return;
 	if (tsk == task[0])
 		panic("task[0] (swapper) doesn't support exec()\n");
+			/*
+			 *	任务 0 中是不能通过 exec 函数来加载执行新程序的。
+			 */
 	pg_dir = tsk->tss.cr3;
+			/*
+			 *	从任务的 TSS 段中获取任务的页目录表所在物理内存页面的基地址。
+			 */
 	page_dir = (unsigned long *) pg_dir;
+			/*
+			 *	page_dir: 指向页目录表，也表示指向页目录表中的第一个页目录项。
+			 */
 	if (!page_dir || page_dir == swapper_pg_dir) {
 		printk("Trying to clear kernel page-directory: not good\n");
 		return;
 	}
+			/*
+			 *	任务没有页目录表，或任务的页目录表是内核页目录表，而内核的页目录表
+			 * 是不允许被释放的。
+			 */
+
+	/*
+	 *	if: 页目录表所在物理内存页面的引用计数大于 1，说明还有其它任务在
+	 * 使用这个页目录表。这时页目录表的用户空间的页表及用户空间的物理内存页面
+	 * 的映射关系还不能解除，它们所占用的物理内存页面还不能释放，否则会影响到
+	 * 其它任务。
+	 *
+	 *	但是任务 tsk 的用户空间的页表及物理内存页面必须清除，因此只需为
+	 * 任务 tsk 重新设置一个页目录表即可。
+	 */
 	if (mem_map[MAP_NR(pg_dir)] > 1) {
 		unsigned long * new_pg;
 
@@ -150,20 +237,45 @@ void clear_page_tables(struct task_struct * tsk)
 			oom(tsk);
 			return;
 		}
+				/*
+				 *	重新申请一页空闲内存用于任务 tsk 的新页目录表。
+				 */
 		for (i = 768 ; i < 1024 ; i++)
 			new_pg[i] = page_dir[i];
+				/*
+				 *	将任务 tsk 的原页目录表中内核空间的页目录项复制到新页目录表中。
+				 * 这样，任务 tsk 的内核空间的映射关系将与原来保持一致。
+				 */
 		free_page(pg_dir);
 		tsk->tss.cr3 = (unsigned long) new_pg;
 		return;
+				/*
+				 *	释放任务 tsk 的原页目录表所占用的物理内存页面，这种情况下 free_page
+				 * 中会将页面的引用计数减 1 并直接返回，并不会真正释放物理内存页面。
+				 *
+				 *	在任务 tsk 的 TSS 段中重新设置任务 tsk 的页目录表。新页目录表的用户
+				 * 空间的页目录项全是 0，用户空间此时没有任何映射关系存在，故直接返回。
+				 */
 	}
+
+	/*
+	 *	for: 循环扫描任务 tsk 的页目录表的用户空间对应的页目录项，对每一个
+	 * 用户空间的页目录项，释放该页目录项指向的页表及页表项指向的物理内存页面。
+	 */
 	for (i = 0 ; i < 768 ; i++,page_dir++)
 		free_one_table(page_dir);
 	invalidate();
+			/* 刷新 TLB */
 	return;
 }
 
 /*
  * This function frees up all page tables of a process when it exits.
+ */
+/*
+ *	free_page_tables: 释放页表，释放一个任务所占用的页目录表、页表及页表项指向的物理内存页面。
+ *
+ *	入参: 指向要释放页表的那个任务的 task_struct 结构的指针。
  */
 void free_page_tables(struct task_struct * tsk)
 {
@@ -177,23 +289,71 @@ void free_page_tables(struct task_struct * tsk)
 		printk("task[0] (swapper) killed: unable to recover\n");
 		panic("Trying to free up swapper memory space");
 	}
+			/*
+			 *	任务 0 是系统的 idle 任务，这个任务是系统中必须存在的一个任务，
+			 * 故不允许释放任务 0 的页表。
+			 */
 	pg_dir = tsk->tss.cr3;
+			/*
+			 *	从任务的 TSS 段中获取任务的页目录表所在物理内存页面的基地址。
+			 */
 	if (!pg_dir || pg_dir == (unsigned long) swapper_pg_dir) {
 		printk("Trying to free kernel page-directory: not good\n");
 		return;
 	}
+			/*
+			 *	任务没有页目录表，或任务的页目录表是内核页目录表，而内核的页目录表
+			 * 是不允许被释放的。
+			 */
 	tsk->tss.cr3 = (unsigned long) swapper_pg_dir;
+			/*
+			 *	任务的页目录表要释放了，所以任务的 TSS 段中不能再保存一个已经不存在
+			 * 的页目录表，那就用内核的页目录表来代替吧，这里将解除任务与原页目录表的
+			 * 连接关系。
+			 */
 	if (tsk == current)
 		__asm__ __volatile__("movl %0,%%cr3": :"a" (tsk->tss.cr3));
+			/*
+			 *	当前正在运行的任务自己释放自己的页表，这时因为当前任务的页目录表在
+			 * 上面已经重新设置为内核的页目录表了，所以需要给 CR3 重新加载当前任务的新
+			 * 页目录表，这个重新加载动作会刷新 TLB。
+			 *
+			 *	这里需要重新加载的原因: 释放当前任务页表的代码及后续的代码都在当前
+			 * 任务的内核空间中执行，这些代码的正常执行需要一个正确的页目录表，而所有的
+			 * 任务共用内核空间，因此所有任务的内核空间的映射关系是完全一致的，所以这里
+			 * 可以直接用内核空间的页目录表。
+			 */
 	if (mem_map[MAP_NR(pg_dir)] > 1) {
 		free_page(pg_dir);
 		return;
 	}
+			/*
+			 *	页目录表所在物理内存页面的引用计数大于 1，说明还有其它任务在使用这个
+			 * 页目录表。这时页目录表、页表及物理内存页面的映射关系还不能解除，它们所占用
+			 * 的物理内存页面还不能释放，否则会影响到其它任务。
+			 *
+			 *	因为这个任务与页目录表的连接关系在前面已经解除了，因此这里直接释放
+			 * 页目录表所在物理内存页面即可，在这种情况下 free_page 中会将页面的引用计数
+			 * 减 1 并直接返回，并不会真正释放物理内存页面。
+			 */
+
 	page_dir = (unsigned long *) pg_dir;
+			/*
+			 *	page_dir: 指向页目录表中的第一个页目录项。
+			 */
+	/*
+	 *	for: 循环扫描页目录表中的所有页目录项，对每一个页目录项，释放该
+	 * 页目录项指向的页表及页表项指向的物理内存页面。
+	 */
 	for (i = 0 ; i < PTRS_PER_PAGE ; i++,page_dir++)
 		free_one_table(page_dir);
 	free_page(pg_dir);
+			/*
+			 *	所有的页表及页表项指向的物理内存页面都释放完了，最后释放页目录表
+			 * 所占用的物理内存页面。
+			 */
 	invalidate();
+			/* 刷新 TLB */
 }
 
 /*
