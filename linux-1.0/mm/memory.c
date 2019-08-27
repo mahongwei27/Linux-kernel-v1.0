@@ -69,6 +69,17 @@ unsigned long free_page_list = 0;
  * don't touch it, so it stays as a kind of "panic-list", that can be
  * accessed when all other mm tricks have failed.
  */
+/*
+ *	secondary_page_list: 二级空闲页面链表，在这个链表上的空闲页面通常用于中断中
+ * 使用页面的情况。平常获取空闲页的操作不会使用到这个链表，因此这个链表可以理解为是
+ * 一种专用链表或备用链表，当所有的其它内存页面获取策略都失败时，才可以访问这个链表
+ * 上的页面。
+ *
+ *	nr_secondary_pages: 二级空闲页面的个数。
+ *
+ *	刚开始系统初始化后这个链表上并没有空闲页面，因为刚开始系统中的页面是足够的，
+ * 所以就没有必要预留页面。后续当有页面释放时，会优先放入到这个链表上作为预留页面。
+ */
 int nr_secondary_pages = 0;
 unsigned long secondary_page_list = 0;
 

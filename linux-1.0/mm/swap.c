@@ -52,11 +52,11 @@ extern int shm_swap (int);
  * The following are used to make sure we don't thrash too much...
  * NOTE!! NR_LAST_FREE_PAGES must be a power of 2...
  */
-	/*
-	 *	last_free_pages: 是一个循环数组，用于存储最近分配的 32 个内存页面，这些内存页面都是
-	 * 近期分配的，基于局部性原理，这些页面近期被访问的可能性最大。因此，因内存页面不足而将已分
-	 * 配的页面交换到交换设备上时，这些页面不允许被交换出去。
-	 */
+/*
+ *	last_free_pages: 是一个循环数组，用于存储最近分配的 32 个内存页面，这些内存页面都是
+ * 近期分配的，基于局部性原理，这些页面近期被访问的可能性最大。因此，因内存页面不足而将已分
+ * 配的页面交换到交换设备上时，这些页面不允许被交换出去。
+ */
 #define NR_LAST_FREE_PAGES 32
 static unsigned long last_free_pages[NR_LAST_FREE_PAGES] = {0,};
 
@@ -496,6 +496,9 @@ static int try_to_free_page(void)
  * pages are requested in interrupts (as malloc can do). Thus the
  * cli/sti's.
  */
+/*
+ *	add_mem_queue: 将 addr 表示的物理内存页面加入到单链表 queue 的头部。
+ */
 static inline void add_mem_queue(unsigned long addr, unsigned long * queue)
 {
 	addr &= PAGE_MASK;
@@ -514,17 +517,38 @@ static inline void add_mem_queue(unsigned long addr, unsigned long * queue)
  * With the above two rules, you get a straight-line execution path
  * for the normal case, giving better asm-code.
  */
+/*
+ *	free_page: 释放物理内存页面，将物理内存页面还回到空闲链表中，使该页面处于
+ * 空闲状态。
+ *
+ *	入参: 要释放的物理内存页面的基地址。
+ */
 void free_page(unsigned long addr)
 {
 	if (addr < high_memory) {
 		unsigned short * map = mem_map + MAP_NR(addr);
-
+				/*
+				 *	map: 指向该页面的管理结构。
+				 */
+		/*
+		 *	if: *map == 0 表示该页面已经处于空闲状态。
+		 */
 		if (*map) {
+			/*
+			 *	if: 不允许释放系统保留的页面。
+			 */
 			if (!(*map & MAP_PAGE_RESERVED)) {
 				unsigned long flag;
 
 				save_flags(flag);
 				cli();
+						/* 修改页面引用计数的动作及释放页面的过程不允许被打断 */
+				/*
+				 *	if: 先将物理内存页面的引用计数减 1，如果减 1 后页面的引用计数不为 0，
+				 * 说明该页面还被其它任务使用着，不能释放，否则会影响到还在使用这个页面的任务。
+				 * 这种情况下的页面释放只是简单的将引用计数减 1 即可，等到后续页面的引用计数
+				 * 减到 0 时才真正释放该页面。
+				 */
 				if (!--*map) {
 					if (nr_secondary_pages < MAX_SECONDARY_PAGES) {
 						add_mem_queue(addr,&secondary_page_list);
@@ -532,8 +556,17 @@ void free_page(unsigned long addr)
 						restore_flags(flag);
 						return;
 					}
+							/*
+							 *	释放页面时，优先将页面释放到二级空闲页面链表
+							 * secondary_page_list 中作为备用页面。
+							 */
 					add_mem_queue(addr,&free_page_list);
 					nr_free_pages++;
+							/*
+							 *	将基地址为 addr 的物理内存页面插入到空闲页面
+							 * 链表 free_page_list 的头部，并将内存中的空闲页面
+							 * 计数 nr_free_pages 增 1。
+							 */
 				}
 				restore_flags(flag);
 			}
@@ -556,7 +589,9 @@ void free_page(unsigned long addr)
  * know what you are doing.
  */
 /*
- *	从物理内存空闲页面链表中移除一个物理内存页面并将链表中的空闲页面计数减少一个:
+ *	REMOVE_FROM_MEM_QUEUE: 从物理内存空闲页面链表中移除一个物理内存页面并将
+ * 链表中的空闲页面计数减少一个。
+ *
  *	queue --- 链表的头
  *	nr --- 链表中空闲页面的个数
  */
@@ -575,17 +610,17 @@ void free_page(unsigned long addr)
 				mem_map[MAP_NR(result)] = 1; \
 						/*	\
 						 *	页面管理结构值置 1，表示页面已使用。这个值也是页面的	\
-						 * 共享计数，表示一个页面可以被多个任务使用。	\
+						 * 引用计数，表示一个页面可以被多个任务使用。	\
 						 */	\
 				nr--; \
-					/* 链表中空闲页面个数减少一个 */	\
-last_free_pages[index = (index + 1) & (NR_LAST_FREE_PAGES - 1)] = result; \
-		/*	\
-		 *	将该页面加入到最近分配的页面数组中，以防被交换出去。	\
-		 */	\
+						/* 链表中空闲页面个数减少一个 */	\
+				last_free_pages[index = (index + 1) & (NR_LAST_FREE_PAGES - 1)] = result; \
+						/*	\
+						 *	将该页面加入到最近分配的页面数组中，以防被交换出去。	\
+						 */	\
 				restore_flags(flag); \
 				return result; \
-					/* 将 __get_free_page 函数返回 */	\
+						/* 将 __get_free_page 函数返回 */	\
 			} \
 			printk("Free page %08lx has mem_map = %d\n", \
 				result,mem_map[MAP_NR(result)]); \
@@ -654,6 +689,10 @@ repeat:
 			 */
 
 	REMOVE_FROM_MEM_QUEUE(secondary_page_list,nr_secondary_pages);
+			/*
+			 *	空闲页面链表中所有的页面都已经分配完了，且系统可用的页面分配策略都
+			 * 已经失败了，这时将尝试从预留的二级空闲页面链表中分配页面。
+			 */
 	return 0;
 }
 
