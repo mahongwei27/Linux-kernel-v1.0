@@ -4,6 +4,10 @@
  * system call entry points
  */
 
+/*
+ *	clone 系统调用将会直接执行 fork 系统调用的处理函数，sys_fork 中将会对 clone
+ * 的情况做特殊处理。
+ */
 #define sys_clone sys_fork
 
 #ifdef __cplusplus

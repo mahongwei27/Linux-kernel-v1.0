@@ -9,6 +9,10 @@ typedef unsigned int size_t;
 #undef NULL
 #define NULL ((void *)0)
 
+/*
+ *	offsetof: 计算 MEMBER 在 TYPE 中的偏移值，通常用来计算结构体成员
+ * 在结构体中的偏移值。
+ */
 #undef offsetof
 #define offsetof(TYPE, MEMBER) ((size_t) &((TYPE *)0)->MEMBER)
 

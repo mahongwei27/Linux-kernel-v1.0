@@ -399,7 +399,7 @@ struct task_struct {
 			 *	stime: 任务的内核态运行时间，单位为 tick。
 			 *	cutime: 任务的所有子任务的用户态运行时间，单位为 tick。
 			 *	cstime: 任务的所有子任务的内核态运行时间，单位为 tick。
-			 *	start_time: 任务开始运行的时间，这个时间是相对于系统启动的时间，
+			 *	start_time: 任务开始存在的时间，这个时间是相对于系统启动的时间，
 			 * 也就是当前 jiffies 的值，单位为 tick。
 			 */
 	unsigned long min_flt, maj_flt;
@@ -428,8 +428,11 @@ struct task_struct {
 /* ldt for this task - used by Wine.  If NULL, default_ldt is used */
 	struct desc_struct *ldt;
 			/*
-			 *	ldt: 指向任务的 LDT 段描述符表，如果 ldt = NULL，则任务将使用系统默认的
-			 * LDT 段描述符表 default_ldt。
+			 *	ldt: 指向任务自己的 LDT 段，如果 ldt = NULL，则任务将使用系统默认的 LDT 段
+			 * default_ldt。LDT 段中的内容由若干个 desc_struct 结构组成，所以这里是指向 desc_struct
+			 * 结构的指针。
+			 *	任务的 TSS 段在任务的 task_struct 结构中，但任务的 LDT 段在其它地方，这里只是
+			 * 指向 LDT 段起始位置的指针。
 			 */
 /* tss for this task */
 	struct tss_struct tss;
@@ -601,8 +604,8 @@ extern int irqaction(unsigned int irq,struct sigaction * sa);
 #define FIRST_TSS_ENTRY 8
 #define FIRST_LDT_ENTRY (FIRST_TSS_ENTRY+1)
 /*
- *	_TSS(n)，_LDT(n): 计算段选择符的值，根据任务号 n 计算用于选择 GDT 表中该任务的
- * TSS 段和 LDT 段的段选择符的值。
+ *	_TSS(n)，_LDT(n): 根据任务号 n 计算段选择符的值，这个选择符将用于选择 GDT 表中
+ * 任务 n 的 TSS 段和 LDT 段的段描述符。
  */
 #define _TSS(n) ((((unsigned long) n)<<4)+(FIRST_TSS_ENTRY<<3))
 #define _LDT(n) ((((unsigned long) n)<<4)+(FIRST_LDT_ENTRY<<3))

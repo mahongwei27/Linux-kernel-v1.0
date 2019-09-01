@@ -7,6 +7,12 @@
 #define _LINUX_LDT_H
 
 /* Maximum number of LDT entries supported. */
+/*
+ *	LDT_ENTRIES: LDT 段的内容由若干个 desc_struct 结构组成，LDT_ENTRIES 表示
+ * LDT 段中 desc_struct 结构的最大个数。
+ *
+ *	LDT_ENTRY_SIZE: 每个 desc_struct 结构的大小。
+ */
 #define LDT_ENTRIES	8192
 /* The size of each LDT entry. */
 #define LDT_ENTRY_SIZE	8

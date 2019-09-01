@@ -147,6 +147,16 @@ int dup_mmap(struct task_struct * tsk)
 	return 0;
 }
 
+/*
+ *	IS_CLONE: 判断用户空间触发的系统调用是 fork 还是 clone，这两种情况对线性地址空间的
+ * 处理是不一样的。
+ *
+ *	copy_vm: 根据 clone_flags 的状态，copy 或 clone 线性地址空间。线性地址空间的最终表现
+ * 形式是物理地址空间，而线性地址空间与物理地址空间之间的唯一连接就是页表，线性地址空间通过
+ * 页表中的映射关系转换为一一对应的物理地址空间。
+ *
+ *	因此，复制线性地址空间实际上就是复制页表及物理地址空间。
+ */
 #define IS_CLONE (regs.orig_eax == __NR_clone)
 #define copy_vm(p) ((clone_flags & COPYVM)?copy_page_tables(p):clone_page_tables(p))
 
@@ -159,6 +169,9 @@ int dup_mmap(struct task_struct * tsk)
  *	sys_fork: 系统调用 fork 对应的系统调用处理函数，创建子任务(子进程)，任务和进程
  * 的概念是通用的。
  *
+ *	系统调用 clone 也将会执行这个处理函数(sys.h 中有 #define sys_clone sys_fork)，
+ * 故 sys_fork 中需要兼容 clone 的处理流程，clone 用于创建子任务(子进程或子线程)。
+ *
  *	入参: struct pt_regs，进入系统调用时所有保存下来的寄存器。
  *
  *	返回值: 执行成功时返回子进程的进程号，执行失败时返回 -EAGAIN。
@@ -170,6 +183,10 @@ asmlinkage int sys_fork(struct pt_regs regs)
 	int i,nr;
 	struct file *f;
 	unsigned long clone_flags = COPYVM | SIGCHLD;
+			/*
+			 *	默认的克隆标志，用于 fork 系统调用。如果是 clone 系统调用，则这个标志会在
+			 * 后面根据 clone 调用传入的参数重新设置。
+			 */
 
 	if(!(p = (struct task_struct*)__get_free_page(GFP_KERNEL)))
 		goto bad_fork;
@@ -187,21 +204,27 @@ asmlinkage int sys_fork(struct pt_regs regs)
 	*p = *current;
 			/*
 			 *	1. task[nr] 指向子任务的 task_struct 结构。
+			 *
 			 *	2. 将父任务的 task_struct 结构复制给子任务，后续将会对复制后的 task_struct
-			 * 结构中的内容做一些修改，作为子任务的任务结构。
+			 * 结构中的内容做一些修改，作为子任务的任务结构，子任务的 task_struct 结构中没有修改
+			 * 的部分将和父任务保持一致。
 			 */
 	p->did_exec = 0;
+			/*  */
 	p->kernel_stack_page = 0;
+			/*  */
 	p->state = TASK_UNINTERRUPTIBLE;
 			/*
 			 *	子任务的状态置为不可中断睡眠状态，防止子任务在还未初始化完之前被调度执行。
 			 */
 	p->flags &= ~(PF_PTRACED|PF_TRACESYS);
+			/*  */
 	p->pid = last_pid;
 			/*
-			 *	设置子进程(任务)的进程号，注意与任务号的区别。
+			 *	设置子任务对应的进程号(线程号)，注意与任务号的区别。
 			 */
 	p->swappable = 1;
+			/*  */
 	p->p_pptr = p->p_opptr = current;
 	p->p_cptr = NULL;
 			/*
@@ -210,7 +233,7 @@ asmlinkage int sys_fork(struct pt_regs regs)
 	SET_LINKS(p);
 	p->signal = 0;
 			/*
-			 *	子任务不继承父任务收到的信号。
+			 *	子任务不继承父任务已经收到的信号。
 			 */
 	p->it_real_value = p->it_virt_value = p->it_prof_value = 0;
 	p->it_real_incr = p->it_virt_incr = p->it_prof_incr = 0;
@@ -230,7 +253,7 @@ asmlinkage int sys_fork(struct pt_regs regs)
 			/*  */
 	p->start_time = jiffies;
 			/*
-			 *	设置子任务开始运行的时间为系统当前的滴答数。
+			 *	设置子任务开始存在的时间为系统当前的滴答数。
 			 */
 /*
  * set up new TSS and kernel stack
@@ -283,7 +306,7 @@ asmlinkage int sys_fork(struct pt_regs regs)
 	childregs->eax = 0;
 			/*
 			 *	子任务内核态栈中 EAX 的位置的值置 0，这个位置保存系统调用的返回值，表示 fork
-			 * 返回时子任务的返回值为 0。
+			 * 或 clone 返回时子任务的返回值为 0。
 			 */
 	p->tss.back_link = 0;
 			/*
@@ -294,6 +317,33 @@ asmlinkage int sys_fork(struct pt_regs regs)
 			 *	子任务继承父任务的标志寄存器的状态，但是不继承父任务的 IOPL(I/O 特权级)，对
 			 * 刚创建的子任务，其 I/O 特权级总是 0。
 			 */
+
+	/*
+	 *	if (IS_CLONE): 如果是 clone 系统调用:
+	 *
+	 *	clone 系统调用一共需要传递 3 个参数: eax 寄存器用于传递系统调用号 __NR_clone，
+	 * ebx 寄存器用于传递子任务的用户态栈指针，ecx 寄存器用于传递 clone 系统调用的标志。
+	 *
+	 *	1. 传递 clone 系统调用标志的原因: clone 与 fork 两个系统调用共用同一个系统调用
+	 * 处理函数 sys_fork，因此 sys_fork 中需要兼容 clone 的分支，而 clone 与 fork 对线性
+	 * 地址空间的处理方式有所不同，而 sys_fork 中默认使用的 clone_flag 是为 fork 系统调用
+	 * 准备的，所以需要在 clone 系统调用中传入这种标志。
+	 *
+	 *	2. 传递子任务用户态栈指针的原因: 通过 clone 这种方式创建出来的子任务称之为子
+	 * 线程，子任务将和父任务共用同一个线性地址空间，共用同一套页表，进而共用同一套物理
+	 * 内存空间。在这种情况下，子任务开始运行并从内核态返回到用户态时，需要使用子任务自己
+	 * 的用户态栈。如果不传入子任务的用户态栈指针，那么子任务将会和父任务使用同一个用户态
+	 * 栈指针，这样子任务和父任务将操作同一个用户态栈，这一定会出问题。
+	 *	线性地址空间中的栈指针相同，物理地址空间中的栈指针也一定相同。
+	 *
+	 *	clone 也可以创建进程，这时这个参数传 0 即可。
+	 *
+	 *	3. fork 不需要传入用户态栈指针的原因: 通过 fork 这种方式创建出来的子任务称之为
+	 * 子进程，子任务将完整的复制父任务的线性地址空间，这样子任务和父任务就会有各自独立的
+	 * 线性地址空间，因此就会有独立的物理内存空间。故子任务返回到用户态时，虽然栈指针的位置
+	 * 和父任务相同，但那也仅仅是在不同线性地址空间中的相同地址而已，而物理地址空间中的地址
+	 * 一定不相同，所以子任务和父任务使用的是不同的用户态栈。
+	 */
 	if (IS_CLONE) {
 		if (regs.ebx)
 			childregs->esp = regs.ebx;
@@ -301,21 +351,66 @@ asmlinkage int sys_fork(struct pt_regs regs)
 		if (childregs->esp == regs.esp)
 			clone_flags |= COPYVM;
 	}
+			/*
+			 *	对 clone 系统调用，有两种情况:
+			 *
+			 *	1. 如果传入的用户态栈指针为 0 地址，则表示子任务需要复制父任务的线性地址空间，
+			 * 这种情况下对线性地址空间的处理就和 fork 一致，实质上就是创建子进程，这种方式创建出
+			 * 的子进程与用 fork 创建出的子进程的差别将由传入的 clone_flags 来决定。
+			 *
+			 *	2. 如果传入了有效的用户态栈指针，则表示子任务与父任务共用同一个线性地址空间，
+			 * 这种情况实质上就是创建子线程。这时需要更新子任务返回用户态时的栈指针，将子任务内核
+			 * 态栈中的 OLDESP 位置的值替换为 clone 传入的栈指针即可。
+			 */
+
 	p->exit_signal = clone_flags & CSIGNAL;
+			/*
+			 *	设置子任务退出时的信号。这里有三种情况: 如果是用 fork 创建子进程，则子进程的
+			 * 退出信号为 SIGCHLD。如果是用 clone 创建子进程，则子进程的退出信号由用户传入。如果
+			 * 是用 clone 创建子线程，则子线程的退出信号由用户传入。
+			 */
 	p->tss.ldt = _LDT(nr);
 	if (p->ldt) {
 		p->ldt = (struct desc_struct*) vmalloc(LDT_ENTRIES*LDT_ENTRY_SIZE);
 		if (p->ldt != NULL)
 			memcpy(p->ldt, current->ldt, LDT_ENTRIES*LDT_ENTRY_SIZE);
 	}
+			/*
+			 *	1. 设置子任务的 LDT 段的段选择符。
+			 *
+			 *	2. 如果父任务有自己的 LDT 段，则子任务需要完整的复制一份父任务的 LDT 段。如果
+			 * 没有，则父任务和子任务都将共用系统默认的 LDT 段 default_ldt，就无需再复制了。
+			 */
 	p->tss.bitmap = offsetof(struct tss_struct,io_bitmap);
 	for (i = 0; i < IO_BITMAP_SIZE+1 ; i++) /* IO bitmap is actually SIZE+1 */
 		p->tss.io_bitmap[i] = ~0;
+			/*
+			 *	1. 设置子任务的 TSS 段中的 BIT_MAP 字段的值，该值表示从 TSS 段开始处到 I/O
+			 * 许可位图处的 16 位偏移值，实际上就是 TSS 段中的 IO_BITMAP 字段在 tss_struct 结构
+			 * 体中的偏移。
+			 *
+			 *	2. 将子任务的 TSS 段中的 IO_BITMAP 字段的比特位全部置 1，表示所有的 I/O 端口
+			 * 子任务暂时都不能访问。
+			 */
 	if (last_task_used_math == current)
 		__asm__("clts ; fnsave %0 ; frstor %0":"=m" (p->tss.i387));
+			/*
+			 *	如果最近使用数学协处理器的任务是父任务，则父任务的数学协处理器的信息有可能
+			 * 还未更新到父任务的 i387 结构中，这时子任务复制的父任务的 i387 结构中的信息有可能
+			 * 不是最新的。故此处需要将父任务的数学协处理器的当前最新信息复制给子任务的 i387
+			 * 结构，父任务的 i387 结构的信息将在其它地方更新。
+			 */
 	p->semun = NULL; p->shm = NULL;
+			/*  */
 	if (copy_vm(p) || shm_fork(current, p))
 		goto bad_fork_cleanup;
+			/*
+			 *	1. 给子任务复制父任务的线性地址空间，线性地址空间的最终表现形式就是物理地址
+			 * 空间，这里将会给子任务克隆或复制父任务的页表，物理内存页面将采用共享或写时复制的
+			 * 方式。
+			 *
+			 *	2. TODO:
+			 */
 	if (clone_flags & COPYFD) {
 		for (i=0; i<NR_OPEN;i++)
 			if ((f = p->filp[i]) != NULL)
@@ -325,22 +420,45 @@ asmlinkage int sys_fork(struct pt_regs regs)
 			if ((f = p->filp[i]) != NULL)
 				f->f_count++;
 	}
+			/*  */
 	if (current->pwd)
 		current->pwd->i_count++;
 	if (current->root)
 		current->root->i_count++;
 	if (current->executable)
 		current->executable->i_count++;
+			/*  */
 	dup_mmap(p);
+			/*  */
 	set_tss_desc(gdt+(nr<<1)+FIRST_TSS_ENTRY,&(p->tss));
 	if (p->ldt)
 		set_ldt_desc(gdt+(nr<<1)+FIRST_LDT_ENTRY,p->ldt, 512);
 	else
 		set_ldt_desc(gdt+(nr<<1)+FIRST_LDT_ENTRY,&default_ldt, 1);
+			/*
+			 *	1. 在 GDT 表中为子任务设置其 TSS 段和 LDT 段的段描述符，该描述符将描述子任务的
+			 * TSS 段和 LDT 段的信息(TSS 段和 LDT 段所在物理内存基地址、段大小等)，由子任务的 TSS
+			 * 段选择符和 LDT 段选择符来选择对应的描述符。
+			 *
+			 *	2. 操作系统在 GDT 表中为每一个任务都预留了 LDT 段描述符，但任务有可能会没有 LDT
+			 * 段存在。故如果任务有自己的 LDT 段存在，则用自己的 LDT 段的信息来设置描述符，如果任务
+			 * 没有自己的 LDT 段存在，则用系统默认的、大家公用的 LDT 段 default_ldt 的信息来设置描
+			 * 述符。
+			 */
 
 	p->counter = current->counter >> 1;
 	p->state = TASK_RUNNING;	/* do this last, just in case */
+			/*
+			 *	1. 设置子任务刚开始运行时的时间片，为父任务当前时间片的一半。在调度程序中，
+			 * counter 的值越大，任务越先被调度到，这里这样设置，是为了让父任务在子任务之前运行。
+			 * 但是父任务一定会在子任务之前吗?
+			 *
+			 *	2. 设置子任务的状态，设置之后子任务将参与系统调度并运行。
+			 */
 	return p->pid;
+			/*
+			 *	父任务将返回子任务对应的进程号(线程号)。
+			 */
 bad_fork_cleanup:
 	task[nr] = NULL;
 	REMOVE_LINKS(p);
