@@ -142,6 +142,9 @@ struct {
 	short b;
 	} stack_start = { & user_stack [PAGE_SIZE>>2] , KERNEL_DS };
 
+/*
+ *	kstat: 内核统计结构变量。
+ */
 struct kernel_stat kstat =
 	{ 0, 0, 0, { 0, 0, 0, 0 }, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
@@ -248,6 +251,13 @@ static unsigned long lost_ticks = 0;
  * The "confuse_gcc" goto is used only to get better assembly code..
  * Djikstra probably hates me.
  */
+/*
+ *	schedule: 内核调度程序，选择下一个将要运行的任务并调度这个任务运行，当前任务暂停
+ * 在 switch_to 中。
+ *
+ *	任务 0 是 idle 任务，当没有其它任务运行时将调度运行任务 0，任务 0 不能被杀死，也
+ * 不能睡眠，内核不会使用任务 0 的状态信息。
+ */
 asmlinkage void schedule(void)
 {
 	int c;
@@ -263,10 +273,18 @@ asmlinkage void schedule(void)
 	itimer_next = ~0;
 	sti();
 	need_resched = 0;
+
+	/*
+	 *	for: 从 init_task 开始，扫描系统中除 init_task 以外的所有任务，完成两项工作。
+	 * 一是处理所有任务的真实间隔定时器，二是唤醒所有已收到信号或超时定时到期的可中断任务。
+	 */
 	p = &init_task;
 	for (;;) {
 		if ((p = p->next_task) == &init_task)
 			goto confuse_gcc1;
+				/*
+				 *	所有任务已扫描完毕。
+				 */
 		if (ticks && p->it_real_value) {
 			if (p->it_real_value <= ticks) {
 				send_sig(SIGALRM, p, 1);
@@ -285,14 +303,27 @@ asmlinkage void schedule(void)
 end_itimer:
 		if (p->state != TASK_INTERRUPTIBLE)
 			continue;
+				/*
+				 *	后面的判断只对可中断睡眠状态的任务有效，TASK_UNINTERRUPTIBLE 状态的
+				 * 任务不能被信号唤醒，只能被 wake_up 函数显示唤醒。
+				 */
 		if (p->signal & ~p->blocked) {
 			p->state = TASK_RUNNING;
 			continue;
 		}
+				/*
+				 *	任务收到了信号(有可能不止一个)，且收到的信号中存在没有被屏蔽的信号，
+				 * 则置任务的状态为就绪态，使其参与系统调度并运行，任务重新运行后，操作系统
+				 * 会在执行到 ret_from_sys_call 时去处理任务收到的信号。
+				 */
 		if (p->timeout && p->timeout <= jiffies) {
 			p->timeout = 0;
 			p->state = TASK_RUNNING;
 		}
+				/*
+				 *	如果设置过任务的超时定时并且任务的超时定时已经到期，则复位超时定时值
+				 * 并将任务置为就绪态使其参与系统调度并执行。
+				 */
 	}
 confuse_gcc1:
 
@@ -307,6 +338,10 @@ confuse_gcc1:
 		++current->counter;
 	}
 #endif
+	/*
+	 *	for: 从 init_task 开始，扫描系统中除 init_task 以外的所有任务，寻找处于就绪状态
+	 * 且运行时间片 counter 最大的那个任务，这个任务将是下一个要运行的任务。
+	 */
 	c = -1;
 	next = p = &init_task;
 	for (;;) {
@@ -315,14 +350,43 @@ confuse_gcc1:
 		if (p->state == TASK_RUNNING && p->counter > c)
 			c = p->counter, next = p;
 	}
+			/*
+			 *	如果找到，则 next 指向这个任务，c 是这个任务的运行时间片 counter。如果系统中
+			 * 已经没有处于就绪状态的任务，则 next 指向 init_task，c == -1，这时下一个将要运行的
+			 * 任务就是init_task，也就是系统的 idle 任务。
+			 */
 confuse_gcc2:
+	/*
+	 *	if (c == 0): 表示系统中有处于就绪态的任务，但是所有处于就绪态的任务的运行时间片
+	 * 都已经用完了，这时就需要为所有任务重新分配时间片了。
+	 */
 	if (!c) {
 		for_each_task(p)
 			p->counter = (p->counter >> 1) + p->priority;
 	}
+			/*
+			 *	counter = counter/2 + priority: 新的 counter 值与任务的优先权值有关。
+			 *
+			 *	这里将对除 init_task 以外的所有的任务都重新设置 counter 值。这时，不在就绪
+			 * 状态的这些任务的 counter 值将会变大。这样，等它们重新回到就绪态时，它们将更有可
+			 * 能被优先调度执行。也就是说一个任务睡的越久，当它醒来以后的优先级就会越高。
+			 *
+			 *	任务的运行时间片只有在所有就绪任务的运行时间片为 0 时才会重新设置，这样，当
+			 * 一个任务的运行时间片用完以后，它就要一直等，它的优先级将会变的很低。
+			 *
+			 *	重新设置完任务的 counter 之后，系统将调度执行 next 指向的那个任务，这时的 next
+			 * 指向之前的扫描中扫到的第一个处于就绪态且 counter 值为 0 的任务。
+			 */
 	if(current != next)
 		kstat.context_swtch++;
+			/* 任务切换的次数增 1 */
+
 	switch_to(next);
+			/*
+			 *	切换下一个任务执行，当前任务 current 将暂停在 switch_to 中，等再次调度执行时
+			 * 将从 switch_to 中继续向下执行。next 指向下一个要执行的任务。
+			 */
+
 	/* Now maybe reload the debug registers */
 	if(current->debugreg[7]){
 		loaddebug(0);

@@ -9,6 +9,9 @@
 
 #define DK_NDRIVE 4
 
+/*
+ *	struct kernel_stat: 内核统计结构，用于统计 cpu 使用情况，任务切换次数等。
+ */
 struct kernel_stat {
 	unsigned int cpu_user, cpu_nice, cpu_system;
 	unsigned int dk_drive[DK_NDRIVE];

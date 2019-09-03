@@ -340,6 +340,8 @@ struct task_struct {
 	struct task_struct *next_task, *prev_task;
 			/*
 			 *	next_task 和 prev_task 用于将系统中所有的任务链接成一个双向循环链表。
+			 * 这个链表将用于遍历系统中所有的任务，遍历时从 init_task 开始。可以称这个
+			 * 链表为系统中所有任务的遍历链表，init_task 是这个链表的头结点。
 			 */
 	struct sigaction sigaction[32];
 			/*
@@ -391,8 +393,29 @@ struct task_struct {
 	unsigned short uid,euid,suid;
 	unsigned short gid,egid,sgid;
 	unsigned long timeout;
+			/*
+			 *	timeout: 任务的超时定时值，单位为 tick，设置 timeout 时，
+			 * timeout = 当前 jiffies + 用户期望的超时时间，当 jiffies >= timeout 时，
+			 * 任务的超时定时到期。
+			 */
 	unsigned long it_real_value, it_prof_value, it_virt_value;
 	unsigned long it_real_incr, it_prof_incr, it_virt_incr;
+			/*
+			 *	这 6 个变量都与任务的间隔定时器有关，间隔定时器的三种类型及原理
+			 * 在 time.h 文件中描述。
+			 *
+			 *	1. ITIMER_REAL: 真实间隔定时器。
+			 *	it_real_incr: 真实间隔定时器的间隔计数器的初始值。
+			 *	it_real_value: 真实间隔定时器的间隔计数器的当前值。
+			 *
+			 *	2. ITIMER_VIRTUAL: 虚拟间隔定时器，也称为任务的用户态间隔定时器。
+			 *	it_virt_incr: 虚拟间隔定时器的间隔计数器的初始值。
+			 *	it_virt_value: 虚拟间隔定时器的间隔计数器的当前值。
+			 *
+			 *	3. ITIMER_PROF: PROF 间隔定时器。
+			 *	it_prof_incr: PROF 间隔定时器的间隔计数器的初始值。
+			 *	it_prof_value: PROF 间隔定时器的间隔计数器的当前值。
+			 */
 	long utime,stime,cutime,cstime,start_time;
 			/*
 			 *	utime: 任务的用户态运行时间，单位为 tick。
@@ -484,7 +507,7 @@ struct task_struct {
 /* schedlink */	&init_task,&init_task, \
 				/*
 				 *	初始时系统中只有 init_task 一个任务，故 init_task 的 next_task 和
-				 * prev_task 都指向自己。
+				 * prev_task 都指向自己。此处初始化系统中所有任务的遍历链表的头结点。
 				 */
 /* signals */	{{ 0, },}, \
 /* stack */	0,(unsigned long) &init_kernel_stack, \
@@ -795,6 +818,15 @@ static inline unsigned long get_limit(unsigned long segment)
 	return __limit+1;
 }
 
+/*
+ *	REMOVE_LINKS: 删除任务的链接关系，将任务 p 从两个链表中删除。
+ *
+ *	1. 将 p 从系统中所有任务的遍历链表中删除，删除后这个任务将不再属于系统中所有任务中
+ * 的一员，遍历任务时将不会再访问到这个任务。
+ *
+ *	2. 将 p 从其父任务与所有子任务组成的链表中删除，删除后父任务将不再有这个子任务，父
+ * 任务的其它子任务将不再有这个兄弟任务。
+ */
 #define REMOVE_LINKS(p) do { unsigned long flags; \
 	save_flags(flags) ; cli(); \
 	(p)->next_task->prev_task = (p)->prev_task; \
@@ -808,6 +840,15 @@ static inline unsigned long get_limit(unsigned long segment)
 		(p)->p_pptr->p_cptr = (p)->p_osptr; \
 	} while (0)
 
+/*
+ *	SET_LINKS: 设置任务的链接关系，将任务 p 链接到两个链表中。
+ *
+ *	1. 将 p 插入到系统中所有任务的遍历链表中，其中 init_task 是这个链表的头结点，插入
+ * 时采用头插法插入到 init_task 的后面。插入后 p 将正式成为系统中所有任务中的一员。
+ *
+ *	2. 将 p 作为其父任务的最新子任务插入到父任务与其它子任务组成的链表中。插入后 p 将
+ * 正式成为其父任务的所有子任务中的一员。
+ */
 #define SET_LINKS(p) do { unsigned long flags; \
 	save_flags(flags); cli(); \
 	(p)->next_task = &init_task; \
@@ -821,6 +862,9 @@ static inline unsigned long get_limit(unsigned long segment)
 	(p)->p_pptr->p_cptr = p; \
 	} while (0)
 
+/*
+ *	for_each_task: 从 init_task 开始遍历系统中除 init_task 以外的所有任务。
+ */
 #define for_each_task(p) \
 	for (p = &init_task ; (p = p->next_task) != &init_task ; )
 
