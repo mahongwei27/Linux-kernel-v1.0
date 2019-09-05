@@ -1276,6 +1276,25 @@ ok_no_page:
  * and the problem, and then passes it off to one of the appropriate
  * routines.
  */
+/*
+ *	do_page_fault: 页错误的中断 C 处理函数，在 sys_call.S 中的 page_fault 函数中调用。
+ *
+ *	入参: regs --- 指向进入中断时保存在当前正在运行的任务的内核态栈中的寄存器的信息。
+ *	      error_code --- 页错误的错误码。
+ *
+ *
+ *	页异常的错误码格式:
+ *
+ *	|   31						    3	|   2	|   1	|   0   |
+ *	+-------------------------------------------------------------------------------+
+ *	|			保留				|  U/S 	|  R/W 	|   P	|
+ *	+-------------------------------------------------------------------------------+
+ *
+ *	BIT0: P --- P = 0 表示缺页异常，P = 1 表示页写保护异常。
+ *	BIT1: R/W --- R/W = 0 表示异常由读操作引起，R/W = 1 表示异常由写操作引起。
+ *	BIT2: U/S --- U/S = 0 表示 CPU 正在执行超级用户代码，U/S = 1 表示 CPU 正在执行一般
+ * 用户代码。
+ */
 asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long error_code)
 {
 	unsigned long address;
@@ -1284,7 +1303,18 @@ asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long error_code)
 
 	/* get the address */
 	__asm__("movl %%cr2,%0":"=r" (address));
+			/*
+			 *	address = CR2。当出现页异常时，处理器会把引起页异常的线性地址保存在
+			 * CR2 寄存器中。
+			 */
+
+	/*
+	 *	if: 页异常发生在任务的用户态空间中。
+	 */
 	if (address < TASK_SIZE) {
+		/*
+		 *	if: 发生异常时 CPU 正在执行一般用户代码。
+		 */
 		if (error_code & 4) {	/* user mode access? */
 			if (regs->eflags & VM_MASK) {
 				bit = (address - 0xA0000) >> PAGE_SHIFT;
@@ -1294,12 +1324,22 @@ asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long error_code)
 				user_esp = regs->esp;
 		}
 		if (error_code & 1)
-			do_wp_page(error_code, address, current, user_esp);
+			do_wp_page(error_code, address, current, user_esp);	/* 处理页写保护异常 */
 		else
-			do_no_page(error_code, address, current, user_esp);
+			do_no_page(error_code, address, current, user_esp);	/* 处理缺页异常 */
 		return;
 	}
+
+	/*
+	 *	below: 页异常发生在任务的内核态空间中。
+	 */
 	address -= TASK_SIZE;
+			/*
+			 *	address = 发生异常时的物理地址。
+			 */
+	/*
+	 *	if: 用于在 mem_init 中测试页写保护功能是否正常。
+	 */
 	if (wp_works_ok < 0 && address == 0 && (error_code & PAGE_PRESENT)) {
 		wp_works_ok = 1;
 		pg0[0] = PAGE_SHARED;
