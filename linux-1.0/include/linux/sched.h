@@ -431,7 +431,7 @@ struct task_struct {
 	unsigned short used_math;
 	unsigned short rss;	/* number of resident pages */
 			/*
-			 *	rss: 任务常驻内存的页数。
+			 *	rss: 任务常驻内存的页面个数。
 			 */
 	char comm[16];
 	struct vm86_struct * vm86_info;

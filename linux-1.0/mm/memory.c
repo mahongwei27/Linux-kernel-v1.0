@@ -83,6 +83,9 @@ unsigned long free_page_list = 0;
 int nr_secondary_pages = 0;
 unsigned long secondary_page_list = 0;
 
+/*
+ *	copy_page: 将 from 表示的页面中的内容完整的复制到 to 表示的页面中。
+ */
 #define copy_page(from,to) \
 __asm__("cld ; rep ; movsl": :"S" (from),"D" (to),"c" (1024):"cx","di","si")
 
@@ -98,12 +101,18 @@ unsigned short * mem_map = NULL;
  * oom() prints a message (so that the user knows why the process died),
  * and gives the process an untrappable SIGSEGV.
  */
+/*
+ *	oom: 内存不足。入参 task 表示内存不足时将要杀死的那个任务。
+ */
 void oom(struct task_struct * task)
 {
 	printk("\nout of memory\n");
 	task->sigaction[SIGKILL-1].sa_handler = NULL;
 	task->blocked &= ~(1<<(SIGKILL-1));
 	send_sig(SIGKILL,task,1);
+			/*
+			 *	解除任务 task 对 SIGKILL 信号的屏蔽并向 task 发送 SIGKILL 信号杀死 task。
+			 */
 }
 
 /*
@@ -941,6 +950,15 @@ unsigned long put_dirty_page(struct task_struct * tsk, unsigned long page, unsig
  * Goto-purists beware: the only reason for goto's here is that it results
  * in better assembly code.. The "default" path will see no jumps at all.
  */
+/*
+ *	__do_wp_page: 解除页面写保护。
+ *
+ *	入参:
+ *	error_code --- 引起页异常的错误码，未使用。
+ *	address --- 引起页异常的线性地址。
+ *	tsk --- 引起页异常的任务。
+ *	user_esp --- 未使用。
+ */
 static void __do_wp_page(unsigned long error_code, unsigned long address,
 	struct task_struct * tsk, unsigned long user_esp)
 {
@@ -948,54 +966,148 @@ static void __do_wp_page(unsigned long error_code, unsigned long address,
 	unsigned long new_page;
 
 	new_page = __get_free_page(GFP_KERNEL);
+			/*
+			 *	申请一页空闲内存页面。
+			 */
 	pde = PAGE_DIR_OFFSET(tsk->tss.cr3,address);
 	pte = *pde;
+			/*
+			 *	pde: 指向页目录表中负责映射线性地址 address 的那个页目录项。
+			 *
+			 *	pte: 获取页目录表中负责映射线性地址 address 的那个页目录项的值，该页目录项的
+			 * 值指示了页表的基地址和页表的属性。
+			 */
 	if (!(pte & PAGE_PRESENT))
 		goto end_wp_page;
 	if ((pte & PAGE_TABLE) != PAGE_TABLE || pte >= high_memory)
 		goto bad_wp_pagetable;
+			/*
+			 *	检测页表是否存在且有效。
+			 */
 	pte &= PAGE_MASK;
 	pte += PAGE_PTR(address);
 	old_page = *(unsigned long *) pte;
+			/*
+			 *	pte: 指向页表中负责映射线性地址 address 的那个页表项。
+			 *
+			 *	old_page: 获取页表中负责映射线性地址 address 的那个页表项的值，该页表项的值
+			 * 指示了线性地址 address 映射后的物理地址所在的物理内存页面的基地址和页面的属性。
+			 *
+			 *	线性地址 address 所在的物理内存页面，也就是那个被写保护的页面，称为原页面。
+			 */
 	if (!(old_page & PAGE_PRESENT))
 		goto end_wp_page;
 	if (old_page >= high_memory)
 		goto bad_wp_page;
 	if (old_page & PAGE_RW)
 		goto end_wp_page;
+			/*
+			 *	检测原页面是否存在、是否有效、是否有可写权限。
+			 */
 	tsk->min_flt++;
+			/*  */
 	prot = (old_page & ~PAGE_MASK) | PAGE_RW;
 	old_page &= PAGE_MASK;
+			/*
+			 *	port: 低 12bit 有效，是新页面的属性字段的值，新页面的属性里将包含原页面的所有
+			 * 属性，并新增可写属性。
+			 */
+
+	/*
+	 *	if: 原页面的引用计数不为 1，说明原页面被多个任务共享。
+	 */
 	if (mem_map[MAP_NR(old_page)] != 1) {
 		if (new_page) {
 			if (mem_map[MAP_NR(old_page)] & MAP_PAGE_RESERVED)
 				++tsk->rss;
+					/*  */
 			copy_page(old_page,new_page);
 			*(unsigned long *) pte = new_page | prot;
 			free_page(old_page);
+					/*
+					 *	对于原页面被多个任务共享的情况，解除页写保护的方式为:
+					 *
+					 *	1. 将原页面中的内容完整的复制一份到新页面中。
+					 *
+					 *	2. 重新设置任务 tsk 的页表中负责映射线性地址 address 的页表项
+					 * 的值，使其指向新页面，进而断开该页表项与原页面的连接关系，并重新设
+					 * 置页表项中的属性字段为新页面的属性。
+					 *
+					 *	这时，当异常返回并重新执行引起异常的那条指令时，线性地址
+					 * address 所映射的物理地址就会在新页面中，且新页面具有可写权限。
+					 *
+					 *	3. 任务 tsk 已经映射好了新页面，则需要释放其占有的原页面，这里
+					 * 的释放动作只是将原页面的引用计数减 1 而已，并不会真正的释放原页面。
+					 */
 			invalidate();
+					/*
+					 *	任务 tsk 的页表已更新，则需要刷新 TLB。
+					 */
 			return;
 		}
+
 		free_page(old_page);
 		oom(tsk);
 		*(unsigned long *) pte = BAD_PAGE | prot;
 		invalidate();
 		return;
+				/*
+				 *	没有为任务 tsk 申请到新页面，对于这种情况，解除页写保护的方式为:
+				 *
+				 *	1. 释放任务 tsk 占有的原页面，这里只是将原页面的引用计数减 1 而已。
+				 *
+				 *	2. 重新设置任务 tsk 的页表中负责映射线性地址 address 的页表项的值，
+				 * 使其与系统给定的无效内存页面建立映射关系，进而断开该页表项与原页面的连
+				 * 接关系。
+				 *
+				 *	实际上，这里没能为 tsk 申请到新的内存页面，所以也就没有办法为任务
+				 * tsk 正确的解除页写保护异常，但是页写保护异常又必须解除，否则退出异常后
+				 * 又会触发同一个页写保护异常。
+				 *
+				 *	另外，在这种情况下会调用 oom 报内存不足，oom 中会发送信号将 tsk
+				 * 杀死，所以这里只需要为任务 tsk 解除页写保护异常即可，任务 tsk 之后的
+				 * 运行状态已无关紧要，因此才会用系统给定的无效内页页面来临时解除任务 tsk
+				 * 的页写保护异常。
+				 */
 	}
+
+	/*
+	 *	below: 原页面的引用计数已经为 1，说明任务 tsk 已独占原页面，只是任务 tsk
+	 * 对原页面没有写权限而已。(共享原页面的其它任务都已经解除了页写保护，并重新建立了
+	 * 新的映射关系，将原页面留给了最后一个解除页写保护的任务使用)
+	 *
+	 *	对于这种情况，解除页写保护的方式是: 在原页面对应的页表项中为原页面新增可写
+	 * 属性，使任务 tsk 对原页面有可写权限即可。
+	 */
 	*(unsigned long *) pte |= PAGE_RW;
 	invalidate();
 	if (new_page)
 		free_page(new_page);
 	return;
+
 bad_wp_page:
 	printk("do_wp_page: bogus page at address %08lx (%08lx)\n",address,old_page);
 	*(unsigned long *) pte = BAD_PAGE | PAGE_SHARED;
 	send_sig(SIGKILL, tsk, 1);
 	goto end_wp_page;
+			/*
+			 *	任务 tsk 中的线性地址 address 映射后的物理地址所在的内存页面无效，则重新设置
+			 * 无效页面对应的页表项的值，使该页表项与系统给定的无效页面建立映射关系，断开与原无效
+			 * 页面的连接关系。
+			 *
+			 *	任务已经映射好的页面无效，这是一种异常的状态，故此处发信号直接将任务杀死。
+			 */
 bad_wp_pagetable:
 	printk("do_wp_page: bogus page-table at address %08lx (%08lx)\n",address,pte);
 	*pde = BAD_PAGETABLE | PAGE_TABLE;
 	send_sig(SIGKILL, tsk, 1);
+			/*
+			 *	任务 tsk 中负责映射线性地址 address 的那个页表无效，则重新设置无效页表对应的
+			 * 页目录项的值，使该页目录项与系统给定的无效页表建立映射关系，断开与原无效页表的连接
+			 * 关系。
+			 *
+			 *	任务的页表存在但无效，这是一种异常的状态，故此处发送信号直接将任务杀死。
+			 */
 end_wp_page:
 	if (new_page)
 		free_page(new_page);
@@ -1005,6 +1117,15 @@ end_wp_page:
 /*
  * check that a page table change is actually needed, and call
  * the low-level function only in that case..
+ */
+/*
+ *	do_wp_page: 处理页写保护异常。
+ *
+ *	入参:
+ *	error_code --- 引起页异常的错误码。
+ *	address --- 引起页异常的线性地址。
+ *	tsk --- 引起页异常的任务。
+ *	user_esp ---
  */
 void do_wp_page(unsigned long error_code, unsigned long address,
 	struct task_struct * tsk, unsigned long user_esp)
@@ -1016,13 +1137,34 @@ void do_wp_page(unsigned long error_code, unsigned long address,
 	page = *pg_table;
 	if (!page)
 		return;
+			/*
+			 *	1. pg_table 指向任务 tsk 的页目录表中负责映射线性地址 address 的页目录项。
+			 *
+			 *	2. page 是页目录项的值，page 的高 20bit 是该页目录项指向的页表的物理内存
+			 * 基地址，低 12bit 是页表的属性。
+			 */
+
+	/*
+	 *	if: 页表的属性显示页表存在且页表的基地址是一个有效的物理内存地址。
+	 */
 	if ((page & PAGE_PRESENT) && page < high_memory) {
 		pg_table = (unsigned long *) ((page & PAGE_MASK) + PAGE_PTR(address));
 		page = *pg_table;
+				/*
+				 *	1. pg_table 指向任务 tsk 的页表中负责映射线性地址 address 的页表项。
+				 *
+				 *	2. page 是页表项的值，page 的高 20bit 是该页表项指向的物理内存页面
+				 * 基地址，低 12bit 是物理内存页面的属性。
+				 *	任务 tsk 的线性地址 address 映射后的物理地址就在这个页面中。
+				 */
 		if (!(page & PAGE_PRESENT))
 			return;
 		if (page & PAGE_RW)
 			return;
+				/*
+				 *	物理内存页面不存在，则无法解除页写保护。物理内存页面已经有可写属性，
+				 * 则无需再解除页写保护。
+				 */
 		if (!(page & PAGE_COW)) {
 			if (user_esp && tsk == current) {
 				current->tss.cr2 = address;
@@ -1037,11 +1179,26 @@ void do_wp_page(unsigned long error_code, unsigned long address,
 			invalidate();
 			return;
 		}
+				/*
+				 *	该物理内存页面的引用计数已经为 1，说明该页面已经被任务 tsk 独占，只是
+				 * tsk 对该页面没有写权限而已。
+				 *
+				 *	对于这种情况，解除页写保护的方式是: 将该物理内存页面对应的页表项中的
+				 * 页面属性置为可写，使任务对该页面有可写权限即可。
+				 */
+
 		__do_wp_page(error_code, address, tsk, user_esp);
+				/*
+				 *	对于物理内存页面被多个任务共享的情况，解除页面写保护。
+				 */
 		return;
 	}
+
 	printk("bad page directory entry %08lx\n",page);
 	*pg_table = 0;
+			/*
+			 *	页目录项指向的页表异常，则断开该页目录项与页表的连接。
+			 */
 }
 
 int __verify_write(unsigned long start, unsigned long size)
@@ -1369,6 +1526,21 @@ asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long error_code)
  * ZERO_PAGE is a special page that is used for zero-initialized
  * data and COW.
  */
+/*
+ *	BAD_PAGE 是 Linux 在内存不足时用于页错误的页面。旧版本的 Linux 只做了一个 do_exit()，
+ * 但是用 BAD_PAGE 代替 do_exit 意味着进程在内核模式下死亡的风险更小，可能会留下一个未使用的
+ * inode 等等。
+ *
+ *	BAD_PAGETABLE 是附带的页表: 它的所有页表项都被初始化为指向 BAD_PAGE。
+ *
+ *	ZERO_PAGE 是一个特殊的页面，它被用于初始化零数据和 COW。
+ */
+
+/*
+ *	__bad_pagetable: 将系统设置的位于 0x4000 地址处的无效页表 _empty_bad_page_table
+ * 中的所有页表项全部设置为 (BAD_PAGE + PAGE_TABLE)，使每一个页表项都与无效页面
+ * _empty_bad_page 建立映射关系，并返回无效页表的基地址。
+ */
 unsigned long __bad_pagetable(void)
 {
 	extern char empty_bad_page_table[PAGE_SIZE];
@@ -1381,6 +1553,10 @@ unsigned long __bad_pagetable(void)
 	return (unsigned long) empty_bad_page_table;
 }
 
+/*
+ *	__bad_page: 将系统设置的位于 0x3000 地址处的无效内存页面 _empty_bad_page
+ * 清 0，并返回无效内存页面的基地址。
+ */
 unsigned long __bad_page(void)
 {
 	extern char empty_bad_page[PAGE_SIZE];
