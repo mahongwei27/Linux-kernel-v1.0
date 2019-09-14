@@ -14,8 +14,15 @@
 
 #include <asm/segment.h>
 
+/*
+ *	_S(nr): 获取信号 nr 对应的信号位图。
+ */
 #define _S(nr) (1<<((nr)-1))
 
+/*
+ *	_BLOCKABLE: 表示可被阻塞的信号，除了 SIGKILL 和 SIGSTOP 以外的所有信号
+ * 都可以被阻塞。
+ */
 #define _BLOCKABLE (~(_S(SIGKILL) | _S(SIGSTOP)))
 
 extern int core_dump(long signr,struct pt_regs * regs);
@@ -156,6 +163,35 @@ static void check_pending(int signum)
 	}	
 }
 
+/*
+ *	sys_signal: 系统调用 signal 对应的系统调用处理函数，用于捕获一个信号，也就是为指定
+ * 的信号安装新的信号句柄(设置新的信号处理函数)。新句柄可以是用户自定义的函数，也可以是
+ * SIG_DFL 或 SIG_IGN。
+ *
+ *	signal 函数不可靠，在某些特殊时刻可能会造成信号丢失，原因是: sys_signal 中会强制
+ * 设置 SA_ONESHOT 标志，这会让系统在执行用户自定义的信号处理函数之前先将信号的句柄设置为
+ * 默认句柄。同时会设置 SA_NOMASK 标志，这会允许在执行信号处理函数的过程中再次收到该信号。
+ *
+ *	因此，当信号产生并执行信号的处理函数时，在重新设置信号的处理句柄之前，该信号又再
+ * 一次产生，但是此时系统已经把该信号的处理句柄设置成了默认的句柄，在这种情况下就有可能会
+ * 造成再次产生的这个信号丢失。
+ *
+ *	信号丢失只是有可能，并不是一定会丢失，信号丢失的时序如下:
+ *	1. 信号产生，系统准备执行用户自定义的信号处理函数，并在此之前将该信号的句柄设置为
+ * 默认句柄。
+ *	2. 执行用户自定义的处理函数，但还没有为该信号重新设置新的句柄，此时该信号又再一次
+ * 产生。
+ *	3. 因为某些特殊时序的作用(比如产生了中断等)，任务在没有为该信号重新设置句柄之前再一
+ * 次进入内核态，并在退出内核态之前处理第二次收到的该信号。
+ *	4. 这时由于之前已经将该信号的句柄设置成了默认值，那么第二次收到的信号就不会执行用户
+ * 自定义的信号处理函数，进而造成信号丢失。
+ *
+ *
+ *	入参: signum --- 指定的信号。
+ *	      handler --- 新句柄。
+ *
+ *	返回: 该信号的原句柄。
+ */
 asmlinkage int sys_signal(int signum, unsigned long handler)
 {
 	struct sigaction tmp;
@@ -164,14 +200,32 @@ asmlinkage int sys_signal(int signum, unsigned long handler)
 		return -EINVAL;
 	if (handler >= TASK_SIZE)
 		return -EFAULT;
+			/*
+			 *	1. 系统最大支持 32 个信号，信号值为 1 - 32。SIGKILL 和 SIGSTOP 这两个信号不
+			 * 允许被用户捕获。
+			 *
+			 *	2. 用户自定义的信号处理函数必须位于任务的用户态空间中。
+			 */
 	tmp.sa_handler = (void (*)(int)) handler;
 	tmp.sa_mask = 0;
 	tmp.sa_flags = SA_ONESHOT | SA_NOMASK;
 	tmp.sa_restorer = NULL;
 	handler = (long) current->sigaction[signum-1].sa_handler;
 	current->sigaction[signum-1] = tmp;
+			/*
+			 *	1. 填充信号对应的 sigaction 结构。sa_mask == 0 表示该信号的处理函数执行期间不
+			 * 阻塞其它任何信号。sa_flags = SA_ONESHOT | SA_NOMASK 表示用户自定义的信号处理函数
+			 * 执行一次之后就恢复为默认的信号处理函数，并且允许在执行信号处理函数的过程中再次收到
+			 * 该信号。
+			 *
+			 *	2. 保存信号的原句柄。
+			 *
+			 *	3. 重新设置信号的 sigaction 结构。
+			 */
 	check_pending(signum);
+			/*  */
 	return handler;
+			/* signal 系统调用返回信号的原句柄 */
 }
 
 asmlinkage int sys_sigaction(int signum, const struct sigaction * action,
