@@ -54,44 +54,86 @@ struct sigcontext_struct {
 	unsigned long cr2;
 };
 
+/*
+ *	sys_sigprocmask: 系统调用 sigprocmask 对应的系统调用处理函数，用于更改当前任务的
+ * 阻塞信号集，同时返回当前任务的原阻塞信号集。
+ *
+ *	入参:	how --- 如何更改的标志，增加、删除、重新设置。
+ *		set --- 用于更改当前任务的阻塞信号集，该指针指向的空间位于用户态空间中。
+ *		oset --- 用于保存当前任务的原阻塞信号集，该指针指向的空间位于用户态空间中。
+ */
 asmlinkage int sys_sigprocmask(int how, sigset_t *set, sigset_t *oset)
 {
 	sigset_t new_set, old_set = current->blocked;
 	int error;
 
+	/*
+	 *	if: set 可以传 NULL，传 NULL 表示不更改当前任务的阻塞信号集，比如用户只是
+	 * 想获取一下当前任务的阻塞信号集而已。
+	 */
 	if (set) {
 		error = verify_area(VERIFY_READ, set, sizeof(sigset_t));
 		if (error)
 			return error;
 		new_set = get_fs_long((unsigned long *) set) & _BLOCKABLE;
+				/*
+				 *	1. 验证 set 指向的存放阻塞信号集的用户态空间是否可读。
+				 *
+				 *	2. 将要更改的阻塞信号集从 set 指向的用户空间中读取到 new_set 表示的
+				 * 内核空间中，且 SIGKILL 和 SIGSTOP 不能被阻塞。
+				 */
 		switch (how) {
 		case SIG_BLOCK:
 			current->blocked |= new_set;
 			break;
+				/* 在当前任务的原阻塞信号集上新增指定的阻塞信号集 */
 		case SIG_UNBLOCK:
 			current->blocked &= ~new_set;
 			break;
+				/* 从当前任务的原阻塞信号集中删除指定的阻塞信号集 */
 		case SIG_SETMASK:
 			current->blocked = new_set;
 			break;
+				/* 重设置当前任务的阻塞信号集 */
 		default:
 			return -EINVAL;
 		}
 	}
+
+	/*
+	 *	if: oset 可以传 NULL，传 NULL 表示用户不想获取当前任务的原阻塞信号集。
+	 */
 	if (oset) {
 		error = verify_area(VERIFY_WRITE, oset, sizeof(sigset_t));
 		if (error)
 			return error;
 		put_fs_long(old_set, (unsigned long *) oset);
 	}
+			/*
+			 *	1. 验证 oset 指向的用于保存当前任务的原阻塞信号集的用户态空间是否可写。
+			 *
+			 *	2. 将当前任务的原阻塞信号集从 old_set 表示的内核空间中写入到 oset 指向的
+			 * 用户空间中。
+			 */
 	return 0;
 }
 
+/*
+ *	sys_sgetmask: 系统调用 sgetmask 对应的系统调用处理函数，用于获取当前任务的
+ * 信号阻塞码。
+ */
 asmlinkage int sys_sgetmask(void)
 {
 	return current->blocked;
 }
 
+/*
+ *	sys_ssetmask: 系统调用 ssetmask 对应的系统调用处理函数，用于给当前任务设置
+ * 新的信号阻塞码，SIGKILL 和 SIGSTOP 不能被阻塞。
+ *
+ *	入参:	newmask --- 新的信号阻塞码。
+ *	返回:	当前任务的原信号阻塞码。
+ */
 asmlinkage int sys_ssetmask(int newmask)
 {
 	int old=current->blocked;
@@ -100,13 +142,25 @@ asmlinkage int sys_ssetmask(int newmask)
 	return old;
 }
 
+/*
+ *	sys_sigpending: 系统调用 sigpending 对应的系统调用处理函数，用于获取当前任务已经
+ * 收到的但被屏蔽的信号，这些信号处于未处理的状态。
+ *
+ *	入参:	set --- 指向用于保存信号的用户态空间的指针。
+ */
 asmlinkage int sys_sigpending(sigset_t *set)
 {
 	int error;
 	/* fill in "set" with signals pending but blocked. */
 	error = verify_area(VERIFY_WRITE, set, 4);
+			/*
+			 *	验证 set 指向的用于保存信号的用户态空间是否可写。
+			 */
 	if (!error)
 		put_fs_long(current->blocked & current->signal, (unsigned long *)set);
+			/*
+			 *	将当前任务已经收到的但被屏蔽的信号写入到 set 指向的用户空间中。
+			 */
 	return error;
 }
 
@@ -144,6 +198,21 @@ asmlinkage int sys_sigsuspend(int restart, unsigned long oldmask, unsigned long 
  * isn't actually ignored, but does automatic child reaping, while
  * SIG_DFL is explicitly said by POSIX to force the signal to be ignored..
  */
+/*
+ *	对于已经挂起的信号(信号已产生，但还未处理)，将信号的操作设置为 SIG_IGN 将导致已
+ * 挂起的信号被丢弃，无论它是否被阻塞(但 SIGCHLD 信号未指定，Linux 将对其做单独处理)。
+ *
+ *	对于已经挂起且默认操作是 Ignore (比如 SIGCHLD)的信号，将信号的操作设置为 SIG_DFL
+ * 将导致已挂起的信号被丢弃，无论它是否被阻塞。
+ *
+ *	注意 SIGCHLD 信号的荒唐行为: SIG_IGN 意味着信号实际上没有被忽略，而是进行子任务的
+ * 自动回收，而 SIG_DFL 则被 POSIX 明确的说成是强制的忽略信号。
+ */
+
+/*
+ *	check_pending: 检测并处理信号的挂起状态，在重新设置信号的属性结构以后必须检测并
+ * 处理信号的挂起状态。
+ */
 static void check_pending(int signum)
 {
 	struct sigaction *p;
@@ -155,12 +224,24 @@ static void check_pending(int signum)
 		current->signal &= ~_S(signum);
 		return;
 	}
+			/*
+			 *	如果信号 signum 的处理函数被重新设置成了 SIG_IGN，则需要将任务已经收到但还未
+			 * 处理的 signum 信号丢弃。
+			 *
+			 *	特例: SIGCHLD 信号不能被丢弃。
+			 */
 	if (p->sa_handler == SIG_DFL) {
 		if (signum != SIGCONT && signum != SIGCHLD && signum != SIGWINCH)
 			return;
 		current->signal &= ~_S(signum);
 		return;
 	}	
+			/*
+			 *	如果信号 signum 的处理函数被重新设置成了 SIG_DFL，则需要将任务已经收到但还未
+			 * 处理的 signum 信号丢弃。
+			 *
+			 *	特例: SIGCONT、SIGCHLD、SIGWINCH 信号不能被丢弃。
+			 */
 }
 
 /*
@@ -187,10 +268,10 @@ static void check_pending(int signum)
  * 自定义的信号处理函数，进而造成信号丢失。
  *
  *
- *	入参: signum --- 指定的信号。
- *	      handler --- 新句柄。
+ *	入参:	signum --- 指定的信号。
+ *		handler --- 新句柄。
  *
- *	返回: 该信号的原句柄。
+ *	返回:	该信号的原句柄。
  */
 asmlinkage int sys_signal(int signum, unsigned long handler)
 {
@@ -223,11 +304,30 @@ asmlinkage int sys_signal(int signum, unsigned long handler)
 			 *	3. 重新设置信号的 sigaction 结构。
 			 */
 	check_pending(signum);
-			/*  */
+			/*
+			 *	重新设置信号的 sigaction 结构后需检测并处理信号的挂起状态
+			 */
 	return handler;
 			/* signal 系统调用返回信号的原句柄 */
 }
 
+/*
+ *	sys_sigaction: 系统调用 sigaction 对应的系统调用处理函数，用于捕获一个信号，也就是
+ * 为指定的信号安装新的属性结构。
+ *
+ *	sigaction 与 signal 不同，signal 只能安装信号的句柄，不能更改信号的标志。sigaction
+ * 将由用户来设置信号的整个属性结构。
+ *
+ *	从可靠性来讲，sigaction 一般是可靠的，除非用户设置了 SA_ONESHOT 标志，这时 sigaction
+ * 就和 signal 一样，变得不可靠了。
+ *
+ *
+ *	入参:	signum --- 指定的信号。
+ *		action --- 指向新属性结构的指针，真正的新属性结构存放在用户空间中。
+ *		oldaction --- 用户给出的用于保存原属性结构的指针，该指针指向的空间位于用户空间中。
+ *
+ *	返回:	成功返回 0，失败返回对应的错误码。
+ */
 asmlinkage int sys_sigaction(int signum, const struct sigaction * action,
 	struct sigaction * oldaction)
 {
@@ -236,30 +336,77 @@ asmlinkage int sys_sigaction(int signum, const struct sigaction * action,
 	if (signum<1 || signum>32 || signum==SIGKILL || signum==SIGSTOP)
 		return -EINVAL;
 	p = signum - 1 + current->sigaction;
+			/*
+			 *	1. 系统最大支持 32 个信号，信号值为 1 - 32。SIGKILL 和 SIGSTOP 这两个信号不
+			 * 允许被用户捕获。
+			 *
+			 *	2. p 指向指定信号对应的 sigaction 结构。
+			 */
+
+	/*
+	 *	if: 指向新属性结构的指针有效。这个指针可以传 NULL，传 NULL 表示不为信号
+	 * 安装新的属性结构。比如用户只是想获取一下信号的属性结构而已。
+	 */
 	if (action) {
 		int err = verify_area(VERIFY_READ, action, sizeof(*action));
 		if (err)
 			return err;
 		memcpy_fromfs(&new_sa, action, sizeof(struct sigaction));
+				/*
+				 *	1. 验证 action 指向的存放新属性结构的用户态空间是否可读。
+				 *
+				 *	2. 将信号的新属性结构从 action 指向的用户空间中复制到 new_sa 表示的
+				 * 内核空间中。
+				 */
 		if (new_sa.sa_flags & SA_NOMASK)
 			new_sa.sa_mask = 0;
 		else {
 			new_sa.sa_mask |= _S(signum);
 			new_sa.sa_mask &= _BLOCKABLE;
 		}
+				/*
+				 *	1. 如果用户设置了 SA_NOMASK 标志，则说明用户允许在执行信号处理函数的
+				 * 过程中再次收到信号(该信号和其它信号都允许)，则将 sa_mask 清 0，表示在执行
+				 * 信号处理函数的过程中不阻塞任何信号。
+				 *
+				 *	2. 如果用户没有设置 SA_NOMASK 标志，则说明用户不想在执行信号处理函数
+				 * 的过程中再次收到该信号(其它信号是允许的)，则需要在 sa_mask 中加入该信号，
+				 * 表示在执行信号处理函数的过程中阻塞该信号。如果用户在 sa_mask 中还设置了其它
+				 * 信号，则同时会阻塞这些信号。
+				 */
 		if (TASK_SIZE <= (unsigned long) new_sa.sa_handler)
 			return -EFAULT;
+				/*
+				 *	用户自定义的信号处理函数必须位于任务的用户态空间中。
+				 */
 	}
+
+	/*
+	 *	if: 保存原属性结构的指针有效。这个指针可以传 NULL，传 NULL 表示用户不想
+	 * 获取信号的原属性结构。
+	 */
 	if (oldaction) {
 		int err = verify_area(VERIFY_WRITE, oldaction, sizeof(*oldaction));
 		if (err)
 			return err;
 		memcpy_tofs(oldaction, p, sizeof(struct sigaction));
+				/*
+				 *	1. 验证 oldaction 指向的用于保存原属性结构的用户态空间是否可写。
+				 *
+				 *	2. 将信号的原属性结构从 p 指向的内核空间中复制到 oldaction 指向的
+				 * 用户空间中。
+				 */
 	}
+
 	if (action) {
 		*p = new_sa;
 		check_pending(signum);
 	}
+			/*
+			 *	1. 为指定信号重新设置新的属性结构。
+			 *
+			 *	2. 重新设置信号的 sigaction 结构后需检测并处理信号的挂起状态
+			 */
 	return 0;
 }
 
