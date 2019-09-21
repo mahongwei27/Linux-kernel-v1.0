@@ -11,15 +11,44 @@
 
 int __verify_write(unsigned long addr, unsigned long count);
 
+/*
+ *	verify_area: 验证 addr 指向的大小为 size 字节的任务的用户态线性地址空间
+ * 是否可读或可写。
+ */
 extern inline int verify_area(int type, const void * addr, unsigned long size)
 {
 	if (TASK_SIZE <= (unsigned long) addr)
 		return -EFAULT;
 	if (size > TASK_SIZE - (unsigned long) addr)
 		return -EFAULT;
+			/*
+			 *	1. 被验证的空间是一段内核态的线性地址空间，这是一种异常的情况。
+			 *
+			 *	2. 被验证的空间大小不能超过可以读写的用户态空间的最大大小。
+			 */
 	if (wp_works_ok || type == VERIFY_READ || !size)
 		return 0;
+			/*
+			 *	1. 如果页写保护功能工作正常，则直接返回验证成功。后续在对用户空间进行读写的
+			 * 过程中，如果出现页面不存在或不可写的情况，则会触发页面异常，由页面异常处理程序来
+			 * 处理缺页或页写保护的问题。
+			 *
+			 *	2. 如果页写保护功能异常，但是系统只是从用户空间读取数据，则直接返回验证成功，
+			 * 后续在读的过程中，如果出现缺页，则会由页面异常处理程序来处理缺页的问题。
+			 *
+			 *	3. 如果页写保护功能异常，且系统将向用户空间写数据，但要写入的大小为 0，则直接
+			 * 返回验证成功，这种情况并不会真正的产生写操作。
+			 */
 	return __verify_write((unsigned long) addr,size);
+			/*
+			 *	1. 页写保护功能异常。
+			 *	2. 系统将向用户空间写数据。
+			 *	3. 要写入的数据大小不为 0，会产生真正的写操作。
+			 *
+			 *	对于这种情况，处理器不能正常处理页写保护异常，就需要手动检测并处理页写保护异常
+			 * 的问题。
+			 *	这里只检测并处理页写保护异常的问题。缺页的问题将交给处理器自动检测并处理。
+			 */
 }
 
 /*

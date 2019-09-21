@@ -1201,16 +1201,29 @@ void do_wp_page(unsigned long error_code, unsigned long address,
 			 */
 }
 
+/*
+ *	__verify_write: 验证 start 指向的大小为 size 字节的当前正在运行任务的用户态
+ * 线性地址空间对应的物理内存页面是否可写，如果不可写，则处理页写保护的问题。
+ */
 int __verify_write(unsigned long start, unsigned long size)
 {
 	size--;
 	size += start & ~PAGE_MASK;
 	size >>= PAGE_SHIFT;
 	start &= PAGE_MASK;
+			/*
+			 *	1. 将 size 由需要验证的字节数转换为需要验证的页面个数。
+			 *
+			 *	2. start 转换为线性地址空间中页面的起始地址。
+			 */
 	do {
 		do_wp_page(1,start,current,0);
 		start += PAGE_SIZE;
 	} while (size--);
+			/*
+			 *	循环验证线性地址空间中的所有页面，检测它们对应的物理内存页面是否被页写保护，
+			 * 如果有页写保护，则解除页写保护。这里不关注缺页的问题。
+			 */
 	return 0;
 }
 
