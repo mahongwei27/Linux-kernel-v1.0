@@ -22,48 +22,105 @@ extern void sem_exit (void);
 
 int getrusage(struct task_struct *, int, struct rusage *);
 
+/*
+ *	generate: 为任务 p 生成信号 sig。信号一旦生成，则表示信号发送成功。
+ */
 static int generate(unsigned long sig, struct task_struct * p)
 {
-	unsigned long mask = 1 << (sig-1);
-	struct sigaction * sa = sig + p->sigaction - 1;
+	unsigned long mask = 1 << (sig-1);		/* 信号对应的信号位图 */
+	struct sigaction * sa = sig + p->sigaction - 1;	/* 信号对应的 sigaction 结构 */
 
 	/* always generate signals for traced processes ??? */
 	if (p->flags & PF_PTRACED) {
 		p->signal |= mask;
 		return 1;
 	}
+			/*
+			 *	如果任务 p 是被跟踪的任务，则不管什么信号，都发送给它。
+			 */
 	/* don't bother with ignored signals (but SIGCHLD is special) */
 	if (sa->sa_handler == SIG_IGN && sig != SIGCHLD)
 		return 0;
+			/*
+			 *	如果任务 p 对信号 sig 的处理是忽略，那么就没有向任务 p 发送 sig 信号的必要了。
+			 * 但是 SIGCHLD 信号比较特殊，具体在 check_pending 中有说明。
+			 */
 	/* some signals are ignored by default.. (but SIGCONT already did its deed) */
 	if ((sa->sa_handler == SIG_DFL) &&
 	    (sig == SIGCONT || sig == SIGCHLD || sig == SIGWINCH))
 		return 0;
+			/*
+			 *	这 3 个信号的默认处理是忽略，就没必要再发送了。
+			 */
 	p->signal |= mask;
+			/* 向任务 p 写入信号 sig，信号发送成功 */
 	return 1;
 }
 
+/*
+ *	send_sig: 当前任务 current 向任务 p 发送信号 sig，权限为 priv。
+ *
+ *	priv: 是否强制发送信号。priv == 1 表示强制发送信号，不需要考虑任务的用户属性或级别。
+ * priv == 0 表示不强制发送信号，发送前需要判断当前任务是否有向任务 p 发送信号的权利。
+ */
 int send_sig(unsigned long sig,struct task_struct * p,int priv)
 {
 	if (!p || sig > 32)
 		return -EINVAL;
+			/* 参数无效 */
 	if (!priv && ((sig != SIGCONT) || (current->session != p->session)) &&
 	    (current->euid != p->euid) && (current->uid != p->uid) && !suser())
 		return -EPERM;
+			/*
+			 *	1. 不强制发送信号。
+			 *	2. 要发送的信号不是 SIGCONT 或 当前任务与任务 p 不在同一个会话中。
+			 *	3. 当前任务与任务 p 现在不属于同一个用户。
+			 *	4. 当前任务与任务 p 不是同一个用户创建的。
+			 *	5. 当前任务所属用户不是超级用户。
+			 *
+			 *	以上条件均成立，则说明当前任务 current 无权向任务 p 发送信号。
+			 */
 	if (!sig)
 		return 0;
+			/* 信号值从 1 开始 */
+
+	/*
+	 *	if:	SIGKILL --- 杀死任务。
+	 *		SIGCONT --- 让处于停止状态的任务恢复运行。
+	 */
 	if ((sig == SIGKILL) || (sig == SIGCONT)) {
 		if (p->state == TASK_STOPPED)
 			p->state = TASK_RUNNING;
+				/*
+				 *	系统只能处理当前正在运行的任务的信号，因此对于处于停止状态的任务，需要
+				 * 将其置为就绪态并使其参与调度进而重新运行。也就是说即便要杀死任务，也要让它
+				 * 先运行起来，然后再自杀。
+				 *
+				 *	处于可中断睡眠状态的任务会在调度程序中唤醒。处于不可中断睡眠状态的任务
+				 * 不能被信号唤醒，只能被 wake_up 显示唤醒。
+				 */
 		p->exit_code = 0;
 		p->signal &= ~( (1<<(SIGSTOP-1)) | (1<<(SIGTSTP-1)) |
 				(1<<(SIGTTIN-1)) | (1<<(SIGTTOU-1)) );
+				/*
+				 *	1. 复位任务的退出码。
+				 *
+				 *	2. 去除任务已经收到的但还未处理的会导致任务进入停止状态的信号。因为有
+				 * 可能在处理信号的时候先处理这些信号，还没来得及处理 SIGKILL 或 SIGCONT 而又
+				 * 进入了停止状态。
+				 */
 	}
+
 	/* Depends on order SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU */
 	if ((sig >= SIGSTOP) && (sig <= SIGTTOU)) 
 		p->signal &= ~(1<<(SIGCONT-1));
+			/*
+			 *	如果要发送的信号是这 4 个信号中的其中一个，则说明要让接收信号的任务 p 停止
+			 * 运行。因此需要将任务 p 已经收到但还未处理的可以让任务继续运行的信号 SIGCONT 去除。
+			 */
 	/* Actually generate the signal */
 	generate(sig,p);
+			/* 生成信号，真正发送信号 */
 	return 0;
 }
 
@@ -215,6 +272,9 @@ int session_of_pgrp(int pgrp)
  * kill_pg() sends a signal to a process group: this is what the tty
  * control characters do (^C, ^Z etc)
  */
+/*
+ *	kill_pg: 向组号为 pgrp 的进程组中的所有进程发送信号 sig，权限为 priv。
+ */
 int kill_pg(int pgrp, int sig, int priv)
 {
 	struct task_struct *p;
@@ -223,6 +283,10 @@ int kill_pg(int pgrp, int sig, int priv)
 
 	if (sig<0 || sig>32 || pgrp<=0)
 		return -EINVAL;
+
+	/*
+	 *	遍历系统中除 init_task 以外的所有任务来查找组 pgrp 中的所有进程。
+	 */
 	for_each_task(p) {
 		if (p->pgrp == pgrp) {
 			if ((err = send_sig(sig,p,priv)) != 0)
@@ -230,14 +294,28 @@ int kill_pg(int pgrp, int sig, int priv)
 			else
 				found++;
 		}
+				/*
+				 *	进程的组号与给定的组号 pgrp 相同，则向进程发送信号 sig。
+				 */
 	}
 	return(found ? 0 : retval);
+			/*
+			 *	1. 如果组中没有进程，则返回 0。
+			 *
+			 *	2. 如果组中有进程，但所有进程的信号均发送失败，则返回发送失败的错误码。
+			 *
+			 *	3. 如果组中有进程，且至少有一个进程的信号发送成功，则返回最终信号发送成功的
+			 * 进程的个数。
+			 */
 }
 
 /*
  * kill_sl() sends a signal to the session leader: this is used
  * to send SIGHUP to the controlling process of a terminal when
  * the connection is lost.
+ */
+/*
+ *	kill_sl: 向会话号为 sess 的会话中的首领进程发送信号 sig，权限为 priv。
  */
 int kill_sl(int sess, int sig, int priv)
 {
@@ -247,6 +325,7 @@ int kill_sl(int sess, int sig, int priv)
 
 	if (sig<0 || sig>32 || sess<=0)
 		return -EINVAL;
+	/* 遍历系统中除 init_task 以外的所有任务来查找会话号为 sess 的会话中的首领进程 */
 	for_each_task(p) {
 		if (p->session == sess && p->leader) {
 			if ((err = send_sig(sig,p,priv)) != 0)
@@ -258,12 +337,16 @@ int kill_sl(int sess, int sig, int priv)
 	return(found ? 0 : retval);
 }
 
+/*
+ *	kill_proc: 向进程号为 pid 的进程发送信号 sig，权限为 priv。
+ */
 int kill_proc(int pid, int sig, int priv)
 {
  	struct task_struct *p;
 
 	if (sig<0 || sig>32)
 		return -EINVAL;
+	/* 遍历系统中除 init_task 以外的所有任务来查找进程号为 pid 的进程 */
 	for_each_task(p) {
 		if (p && p->pid == pid)
 			return send_sig(sig,p,priv);
@@ -275,6 +358,20 @@ int kill_proc(int pid, int sig, int priv)
  * POSIX specifies that kill(-1,sig) is unspecified, but what we have
  * is probably wrong.  Should make it like BSD or SYSV.
  */
+/*
+ *	sys_kill: 系统调用 kill 对应的系统调用处理函数。用于向任何进程或进程组发送
+ * 任何信号，而并非只是杀死进程。
+ *
+ *	参数 pid 是进程号，sig 是要发送的信号，根据 pid 的不同，有以下几种情况:
+ *
+ *	1. pid > 0: 则信号 sig 将被发送给进程号是 pid 的进程。
+ *
+ *	2. pid == 0: 则信号 sig 将被发送给当前进程所属的进程组中的所有进程。
+ *
+ *	3. pid == -1: 则信号 sig 将被发送给系统中除 0 号进程和 1 号进程及当前进程以外的所有进程。
+ *
+ *	4. pid < -1: 则信号 sig 将被发送给进程组 -pid 中的所有进程。
+ */
 asmlinkage int sys_kill(int pid,int sig)
 {
 	int err, retval = 0, count = 0;
@@ -284,6 +381,7 @@ asmlinkage int sys_kill(int pid,int sig)
 	if (pid == -1) {
 		struct task_struct * p;
 		for_each_task(p) {
+			/* for_each_task 过滤掉 0 号进程，这里过滤掉 1 号进程和当前进程 */
 			if (p->pid > 1 && p != current) {
 				++count;
 				if ((err = send_sig(sig,p,0)) != -EPERM)
@@ -293,9 +391,9 @@ asmlinkage int sys_kill(int pid,int sig)
 		return(count ? retval : -ESRCH);
 	}
 	if (pid < 0) 
-		return(kill_pg(-pid,sig,0));
+		return(kill_pg(-pid,sig,0));	/* pid < -1 */
 	/* Normal kill */
-	return(kill_proc(pid,sig,0));
+	return(kill_proc(pid,sig,0));		/* pid > 0 */
 }
 
 /*
