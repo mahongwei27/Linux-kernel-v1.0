@@ -392,6 +392,10 @@ struct task_struct {
 	 */
 	unsigned short uid,euid,suid;
 	unsigned short gid,egid,sgid;
+			/*
+			 *	uid: 用户 ID，表示任务是由哪个用户创建的。
+			 *	euid: 有效用户 ID，表示任务当前属于哪个用户。
+			 */
 	unsigned long timeout;
 			/*
 			 *	timeout: 任务的超时定时值，单位为 tick，设置 timeout 时，

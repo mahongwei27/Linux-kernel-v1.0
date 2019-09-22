@@ -294,6 +294,9 @@ _system_call:
 			 *	call [ sys_call_table + %eax * 4 ]: 根据系统调用号调用对应的系统调用函数。
 			 * 如: fork 系统调用对应的调用号为 __NR_fork = 2，sys_call_table[2] = sys_fork，
 			 * 因此系统调用 fork 对应的系统调用处理函数为 sys_fork。
+			 *
+			 *	系统调用处理函数的参数依次排列在当前内核态栈的栈顶部分，即从 esp0 开始的
+			 * 地方，系统调用处理函数执行时将会按顺序依次使用这里的参数。
 			 */
 	movl %eax,EAX(%esp)		# save the return value
 			/*
