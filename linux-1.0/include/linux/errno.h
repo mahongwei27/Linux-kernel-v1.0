@@ -125,6 +125,16 @@
 #define	EDQUOT		122	/* Quota exceeded */
 
 /* Should never be seen by user programs */
+/*
+ *	这三个错误码用于重启系统调用:
+ *
+ *	ERESTARTSYS: 重启系统调用，但受限于信号的 sa_flags 中的 SA_RESTART 标志。
+ *
+ *	ERESTARTNOINTR: 无条件重启系统调用，不受任何因素干扰。
+ *
+ *	ERESTARTNOHAND: 表示当没有用户自定义的信号处理函数需要执行时将重启系统调用，
+ * 只要有一个用户自定义的信号处理函数需要执行就不能重启系统调用。
+ */
 #define ERESTARTSYS	512
 #define ERESTARTNOINTR	513
 #define ERESTARTNOHAND	514	/* restart if no handler.. */

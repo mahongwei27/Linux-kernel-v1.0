@@ -356,6 +356,14 @@ struct task_struct {
 			 *	kernel_stack_page: 任务的内核态栈所在物理内存页面的基地址。
 			 */
 	int exit_code, exit_signal;
+			/*
+			 *	exit_code: 任务的退出码，表示任务因为什么原因而退出。
+			 *
+			 *	exit_signal: 任务的退出信号，表示当任务退出时该向其父任务发送一个什么信号。
+			 *
+			 *	任务的退出指的是任务退出 TASK_RUNNING 状态，不再参与系统调度，而并不仅仅
+			 * 表示是任务的彻底消失，所以任务停止运行也属于退出。
+			 */
 	int elf_executable:1;
 	int dumpable:1;
 	int swappable:1;

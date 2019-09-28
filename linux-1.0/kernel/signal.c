@@ -510,6 +510,15 @@ static void setup_frame(struct sigaction * sa, unsigned long ** fp, unsigned lon
  * the kernel can handle, and then we build all the user-level signal handling
  * stack-frames in one go after that.
  */
+/*
+ *	do_signal: 信号处理函数，用于处理当前正在运行任务 current 的信号。
+ *
+ *	注意: init 是一个特殊的进程，它不接收不想处理的信号。因此，即使错误的使用
+ * SIGKILL 也不能杀死 init。
+ *
+ *	入参:	oldmask --- 当前任务的信号屏蔽码。
+ *		regs --- 指向任务进入内核态时保存的栈帧的栈顶 esp0 处。
+ */
 asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
 {
 	unsigned long mask = ~current->blocked;
@@ -519,13 +528,29 @@ asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
 	unsigned long signr;
 	struct sigaction * sa;
 
+	/*
+	 *	while: 循环处理当前任务已经收到的但未被阻塞的所有信号，每次循环只处理信号值
+	 * 最小的那个信号，直到所有的信号都处理完毕为止。
+	 *
+	 *	循环开始时 signr 中保存的是还未处理的所有信号。
+	 */
 	while ((signr = current->signal & mask)) {
 		__asm__("bsf %2,%1\n\t"
 			"btrl %1,%0"
 			:"=m" (current->signal),"=r" (signr)
 			:"1" (signr));
+				/*
+				 *	1. bsf: 从还未处理的所有信号 signr 中寻找信号值最小的那个信号，并将
+				 * 该信号的位偏移值重新放入 signr 中，下一步将处理这个信号。
+				 *
+				 *	2. btrl: 将该信号从 current->signal 中清除，表示该信号已被处理。
+				 */
 		sa = current->sigaction + signr;
 		signr++;
+				/*
+				 *	sa 指向该信号对应的 sigaction 结构。
+				 *	signr 保存的是信号值。(信号值 = 位偏移值 + 1)
+				 */
 		if ((current->flags & PF_PTRACED) && signr != SIGKILL) {
 			current->exit_code = signr;
 			current->state = TASK_STOPPED;
@@ -542,6 +567,11 @@ asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
 			}
 			sa = current->sigaction + signr - 1;
 		}
+
+		/*
+		 *	if: 信号的处理函数是 SIG_IGN，表示该信号将被忽略，则什么也不做，继续
+		 * 处理下一个信号。
+		 */
 		if (sa->sa_handler == SIG_IGN) {
 			if (signr != SIGCHLD)
 				continue;
@@ -549,17 +579,36 @@ asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
 			while (sys_waitpid(-1,NULL,WNOHANG) > 0)
 				/* nothing */;
 			continue;
+					/*
+					 *	SIGCHLD 信号是一个特例，具体在 check_pending 中说明。如果
+					 * 当前任务收到了 SIGCHLD 信号，则需要等待其任何子任务退出，且等待
+					 * 过程中如果没有子任务退出或终止就马上返回。
+					 */
 		}
+
+		/*
+		 *	if: 信号的处理函数是 SIG_DFL，表示该信号将走默认处理流程。
+		 */
 		if (sa->sa_handler == SIG_DFL) {
 			if (current->pid == 1)
 				continue;
+					/* 不处理 init 进程收到的信号 */
 			switch (signr) {
+			/*
+			 *	对这 3 个信号的默认处理是忽略，SIGCONT 信号是为了让当前任务
+			 * 恢复运行，但当前任务现在已经在运行状态了，所以直接忽略它即可。
+			 */
 			case SIGCONT: case SIGCHLD: case SIGWINCH:
 				continue;
 
+			/*
+			 *	对这 4 个信号的默认处理是停止当前任务的运行，当前任务被再次
+			 * 调度回来以后，继续处理其它的信号。
+			 */
 			case SIGSTOP: case SIGTSTP: case SIGTTIN: case SIGTTOU:
 				if (current->flags & PF_PTRACED)
 					continue;
+						/* 当前任务的系统调用过程被跟踪，则忽略它们 */
 				current->state = TASK_STOPPED;
 				current->exit_code = signr;
 				if (!(current->p_pptr->sigaction[SIGCHLD-1].sa_flags & 
@@ -567,28 +616,90 @@ asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
 					notify_parent(current);
 				schedule();
 				continue;
+						/*
+						 *	1. 设置当前任务为停止状态，并设置退出码，表示任务因
+						 * 收到了 XX 信号而退出执行。
+						 *
+						 *	2. 如果当前任务的父任务没有设置 SA_NOCLDSTOP 标志，
+						 * 则将当前任务退出执行时应该发送给父任务的信号发送给父任务。
+						 * 表示当前任务已退出执行，退出原因在 exit_code 中。
+						 *
+						 *	3. 停止当前任务的执行并调度新任务执行，当前任务被再次
+						 * 调度回来之后继续处理其它的信号。
+						 */
 
+			/*
+			 *	对这 6 个信号的默认处理是先产生 core_dump 文件，然后再执行
+			 * do_exit 让当前任务退出。
+			 */
 			case SIGQUIT: case SIGILL: case SIGTRAP:
 			case SIGIOT: case SIGFPE: case SIGSEGV:
 				if (core_dump(signr,regs))
 					signr |= 0x80;
 				/* fall through */
+			/*
+			 *	剩余的其它信号的默认处理(比如 SIGKILL)都是直接执行 do_exit
+			 * 让当前任务退出。
+			 */
 			default:
 				current->signal |= _S(signr & 0x7f);
 				do_exit(signr);
 			}
 		}
+
 		/*
 		 * OK, we're invoking a handler
+		 */
+		/*
+		 *	1. 对一个信号的处理执行到这里，说明该信号有用户自定义的信号处理函数需要执行。
+		 *
+		 *	2. 当前任务如果是通过系统调用进入内核态并执行到信号处理的地方，则有两种情况:
+		 * 一是当前任务的系统调用正常执行完毕，二是系统调用的执行过程被中断，比如系统调用
+		 * 因为某些原因要睡眠等待，但睡眠的过程中被信号打断。因此需要判断系统调用是不是被
+		 * 中断了，如果是，则还需要确定是否需要重启这个被中断的系统调用。
+		 *
+		 *	3. 当前任务如果是因执行中断而进入内核态并执行到信号处理的地方，则跟系统调用
+		 * 没有任何关系，也不会做任何跟重启系统调用相关的动作。
 		 */
 		if (regs->orig_eax >= 0) {
 			if (regs->eax == -ERESTARTNOHAND ||
 			   (regs->eax == -ERESTARTSYS && !(sa->sa_flags & SA_RESTART)))
 				regs->eax = -EINTR;
 		}
+				/*
+				 *	1. 如果保存在 ORIG_EAX(0x2C) 处的系统调用号有效( >= 0 )，则需要检测
+				 * 是否需要重启该系统调用。如果是中断处理的尾部执行到这里，则 ORIG_EAX 处会
+				 * 被填入 -1，这时将不会做重启系统调用的任何操作。
+				 *
+				 *	2. 如果保存在 EAX(0x18) 处的系统调用的返回值是 -ERESTARTNOHAND，则
+				 * 不能重启系统调用，因为这时已经至少有一个用户自定义的信号处理函数需要执行。
+				 *
+				 *	3. 如果系统调用的返回值是 -ERESTARTSYS，则还需要判断该信号是否设置了
+				 * SA_RESTART 表示，如果没有设置 SA_RESTART 标志，则表示系统调用被该信号中断
+				 * 时不能重启系统调用。
+				 *
+				 *	4. 如果系统调用不能被重启，则设置系统调用的返回值为 -EINTR，表示系统
+				 * 调用被中断。
+				 *
+				 *	5. 只要有一个信号导致系统调用不能被重启，那么系统调用就不会重启。
+				 */
 		handler_signal |= 1 << (signr-1);
 		mask &= ~sa->sa_mask;
+				/*
+				 *	1. 将该信号保存在 handler_signal 中，待所有信号都处理完毕后再统一处理
+				 * 这些需要执行用户自定义处理函数的信号。
+				 *
+				 *	2. mask 中屏蔽掉当前信号的 sa_mask 中指定的那些信号，因为当前信号的
+				 * 处理函数执行时需要阻塞 sa_mask 中指定的那些信号，故这里暂时就不再处理这些
+				 * 信号了。
+				 */
 	}
+
+	/*
+	 *	当前任务已收到的但未被阻塞的所有信号都已经处理完毕。需要执行用户自定义
+	 * 处理函数的信号都保存在 handler_signal 中。后面将再一次处理这些信号。
+	 */
+
 	if (regs->orig_eax >= 0 &&
 	    (regs->eax == -ERESTARTNOHAND ||
 	     regs->eax == -ERESTARTSYS ||
@@ -596,8 +707,30 @@ asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
 		regs->eax = regs->orig_eax;
 		regs->eip -= 2;
 	}
+			/*
+			 *	检测是否需要重启系统调用。如果不需要重启系统调用，则任务返回到用户态时，代码
+			 * 指针 eip 指向 "int $0x80" 指令后面的一条指令，eax 寄存器中保存的是系统调用的返回值，
+			 * 处理器将从 "int $0x80" 的后面一条指令处开始继续向下执行用户态的代码。
+			 *
+			 *	如果需要重启系统调用，则:
+			 *
+			 *	1. 修改 EAX(0x18) 处的系统调用返回值为 ORIG_EAX(0x2C) 处保存的系统调用号。
+			 *
+			 *	2. 修改 EIP(0x30) 处的代码指针，使其重新指向 "int $0x80" 指令。
+			 *
+			 *	这时，当任务返回到用户态时，代码指针 eip 重新指向 "int $0x80" 指令，eax 寄存器
+			 * 中保存的是被中断的系统调用号，处理器将重新执行 "int $0x80" 指令，也就是重启被中断的
+			 * 系统调用。并且，重启系统调用是返回用户态后立即执行的，不会执行用户态的任何代码，所以
+			 * 用户根本不知道系统调用被重启过。
+			 */
 	if (!handler_signal)		/* no handler will be called - return 0 */
 		return 0;
+			/*
+			 *	没有需要执行自定义处理函数的信号，则直接返回，任务的信号处理流程结束，当任务
+			 * 返回到用户态时将继续执行用户态的代码或重启系统调用。
+			 *
+			 *	否则就需要为执行用户自定义的信号处理函数做准备。
+			 */
 	eip = regs->eip;
 	frame = (unsigned long *) regs->esp;
 	signr = 1;
