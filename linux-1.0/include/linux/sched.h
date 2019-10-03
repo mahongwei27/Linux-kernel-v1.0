@@ -904,8 +904,8 @@ static inline unsigned long get_limit(unsigned long segment)
  *	1. 将 p 从系统中所有任务的遍历链表中删除，删除后这个任务将不再属于系统中所有任务中
  * 的一员，遍历任务时将不会再访问到这个任务。
  *
- *	2. 将 p 从其父任务与所有子任务组成的链表中删除，删除后父任务将不再有这个子任务，父
- * 任务的其它子任务将不再有这个兄弟任务。
+ *	2. 将 p 从其现在父任务(p_pptr)与所有子任务组成的链表中删除，删除后现在父任务将不再
+ * 有这个子任务，现在父任务的其它子任务将不再有这个兄弟任务。
  */
 #define REMOVE_LINKS(p) do { unsigned long flags; \
 	save_flags(flags) ; cli(); \
@@ -926,8 +926,8 @@ static inline unsigned long get_limit(unsigned long segment)
  *	1. 将 p 插入到系统中所有任务的遍历链表中，其中 init_task 是这个链表的头结点，插入
  * 时采用头插法插入到 init_task 的后面。插入后 p 将正式成为系统中所有任务中的一员。
  *
- *	2. 将 p 作为其父任务的最新子任务插入到父任务与其它子任务组成的链表中。插入后 p 将
- * 正式成为其父任务的所有子任务中的一员。
+ *	2. 将 p 作为其现在父任务(p_pptr)的最新子任务插入到现在父任务与其它子任务组成的链表
+ * 中。插入后 p 将正式成为其现在父任务的所有子任务中的一员。
  */
 #define SET_LINKS(p) do { unsigned long flags; \
 	save_flags(flags); cli(); \

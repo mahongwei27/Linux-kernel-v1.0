@@ -1,6 +1,19 @@
 #ifndef _LINUX_WAIT_H
 #define _LINUX_WAIT_H
 
+/*
+ *	wait4 系统调用会用到的标志:
+ *
+ *	WNOHANG: 表示如果指定的子任务没有退出，也就是没有处于 TASK_ZOMBIE 状态
+ * 时，系统调用处理函数需马上返回，不需要将当前任务挂起来等待。
+ *
+ *	WUNTRACED: 表示如果指定的子任务已经处于 TASK_STOPPED 状态，则系统调用
+ * 处理函数需马上返回。
+ *
+ *	__WCLONE: 表示只等待通过 clone 的方式创建的子任务，也就是等待子线程退出。
+ * 由于线程在线性地址空间上的特殊性，子线程退出时将会使用 SIGCHLD 以外的信号来
+ * 通知其父任务，即子线程退出时不会向父任务发送 SIGCHLD 信号。
+ */
 #define WNOHANG		0x00000001
 #define WUNTRACED	0x00000002
 

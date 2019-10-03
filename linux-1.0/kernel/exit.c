@@ -578,6 +578,50 @@ asmlinkage int sys_exit(int error_code)
 	do_exit((error_code&0xff)<<8);
 }
 
+/*
+ *	sys_wait4: 系统调用 wait4 对应的系统调用处理函数，用于等待指定的子任务退出(终止)，
+ * 当指定的子任务退出时将对其占有的资源进行回收，最终使其彻底消失。
+ *
+ *	1. 一个任务彻底消失会有两个阶段: 第一个阶段是任务自己退出(终止)阶段，在这个阶段里
+ * 将由任务自己来释放它所占有的大部分资源，只保留一小部分资源，进而终止执行，变成僵尸态，
+ * 然后等待其父任务来回收。第二阶段是父任务回收阶段，在这个阶段里将由父任务来释放它保留的
+ * 那一小部分资源，任务所占有的所有资源释放完毕之后，任务将彻底消失。
+ *
+ *	2. 因此，wait4 系统调用的功能是: 首先等待指定的子任务退出，也就是等待子任务彻底
+ * 消失的第一阶段结束，子任务的状态变成僵尸态。然后当指定的子任务退出后执行子任务彻底消失
+ * 的第二阶段，回收该子任务，使其彻底消失。
+ *
+ *	3. 等待子任务退出会有三种情况:
+ *	一是 sys_wait4 执行时指定的子任务已经退出了，也就是状态已经变成了 TASK_ZOMBIE，
+ * 这时该系统调用期望的状态已经出现，所以会直接回收子任务并退出系统调用。
+ *	二是 sys_wait4 执行时指定的子任务还未退出，这时就需要将当前任务挂起来等待，直到
+ * 指定的子任务退出或收到中断本系统调用的信号为止。
+ *	三是指定的子任务压根就不存在，这时系统调用会直接退出并返回 -ECHILD。
+ *
+ *	4. 用户指定的 options 和子任务的 TASK_STOPPED 状态会影响 sys_wait4 的执行流程。
+ *
+ *	5. wait4 系统调用每次只能等待一个子任务退出，如果要等待多个子任务退出，就需要多次
+ * 触发 wait4 系统调用。当然，退出的子任务是当前任务 current 的子任务。
+ *
+ *
+ *	入参:	pid --- 子任务对应的进程号。
+ *		stat_addr --- 指向当前任务的用户态空间的指针，这个用户态空间用于向用户返回
+ *			子任务的退出码。
+ *		options --- 等待子任务退出时的选项。
+ *		ru --- 指向当前任务的用户态空间的指针，这个用户态空间用于向用户返回子任务的
+ *			资源使用信息。
+ *
+ *	根据参数 pid 的不同，有以下几种情况:
+ *
+ *	1. pid > 0: 表示当前任务正在等待进程号等于 pid 的子任务退出。
+ *
+ *	2. pid == 0: 表示当前任务正在等待进程组号等于当前任务进程组号的任何一个子任务退出，
+ * 也就是等待与当前任务 current 同组的任何一个子任务退出。
+ *
+ *	3. pid == -1: 表示当前任务正在等待任何一个子任务退出。
+ *
+ *	4. pid < -1: 表示当前任务正在等待进程组号等于 -pid 的任何一个子任务退出。
+ */
 asmlinkage int sys_wait4(pid_t pid,unsigned long * stat_addr, int options, struct rusage * ru)
 {
 	int flag, retval;
@@ -589,30 +633,80 @@ asmlinkage int sys_wait4(pid_t pid,unsigned long * stat_addr, int options, struc
 		if (flag)
 			return flag;
 	}
+			/*
+			 *	验证 stat_addr 指向的用于保存子任务退出状态的用户态空间是否可写。
+			 */
 	add_wait_queue(&current->wait_chldexit,&wait);
 repeat:
+	/*
+	 *	for: 从当前任务的最年轻的子任务开始扫描当前任务的子任务链表，直到找到指定
+	 * 的子任务或扫描完所有的子任务为止。
+	 */
 	flag=0;
  	for (p = current->p_cptr ; p ; p = p->p_osptr) {
 		if (pid>0) {
 			if (p->pid != pid)
 				continue;
+					/* pid > 0: 寻找进程号等于 pid 的子任务 */
 		} else if (!pid) {
 			if (p->pgrp != current->pgrp)
 				continue;
+					/* pid == 0: 寻找与父任务位于同一个进程组的任意一个子任务 */
 		} else if (pid != -1) {
 			if (p->pgrp != -pid)
 				continue;
+					/* pid < -1: 寻找与 -pid 同组的任意一个子任务 */
 		}
+					/*
+					 *	pid == -1: 任意一个子任务
+					 */
+
 		/* wait for cloned processes iff the __WCLONE flag is set */
 		if ((p->exit_signal != SIGCHLD) ^ ((options & __WCLONE) != 0))
 			continue;
+					/*
+					 *	对找到的满足条件的一个子任务:
+					 *
+					 *	1. 如果用户设置了 __WCLONE 标志，且找到的子任务的退出信号为
+					 * SIGCHLD，则放弃当前子任务，继续寻找下一个满足条件的子任务。
+					 *
+					 *	用户设置 __WCLONE 表示只等待通过 clone 方式创建的子任务退出，
+					 * 也就是只等待子线程退出，而子线程退出时是不会用 SIGCHLD 信号来通知
+					 * 其父任务的。
+					 *
+					 *	2. 如果用户未设置 __WCLONE 标志，且找到的子任务的退出信号不是
+					 * SIGCHLD，则放弃当前子任务，继续寻找下一个满足条件的子任务。
+					 *
+					 *	用户未设置 __WCLONE 表示只等待通过 fork 方式创建的子任务退出，
+					 * 也就是只等待子进程退出，而子进程退出时需要用 SIGCHLD 信号来通知其
+					 * 父任务。
+					 */
+
+		/*
+		 *	flag = 1: 找到了一个满足条件的子任务。
+		 */
 		flag = 1;
 		switch (p->state) {
+			/* 选到的子任务处于停止状态 */
 			case TASK_STOPPED:
 				if (!p->exit_code)
 					continue;
 				if (!(options & WUNTRACED) && !(p->flags & PF_PTRACED))
 					continue;
+						/*
+						 *	1. 如果子任务的退出码已经被处理了，则继续寻找下一个
+						 * 满足条件的子任务，否则就需要判断本系统调用处理函数是否
+						 * 需要马上返回。
+						 *
+						 *	2. 如果用户没有设置 WUNTRACED 标志且子任务的系统调用
+						 * 未被跟踪，则表示本系统调用处理函数无需立即返回，因此继续
+						 * 寻找其它满足条件的子任务。
+						 *
+						 *	3. 如果用户设置了 WUNTRACED 标志，则表示当满足条件的
+						 * 子任务处于停止状态时，本系统调用处理函数需要马上返回，这时
+						 * 代码将继续向下执行并最终退出系统调用处理函数。
+						 *	当然，子任务的系统调用被跟踪时也需要马上返回。
+						 */
 				if (stat_addr)
 					put_fs_long((p->exit_code << 8) | 0x7f,
 						stat_addr);
@@ -621,16 +715,48 @@ repeat:
 					getrusage(p, RUSAGE_BOTH, ru);
 				retval = p->pid;
 				goto end_wait4;
+						/*
+						 *	1. 将子任务的退出码写入到 stat_addr 指向的用户空间中，
+						 * 高字节保存退出码，低字节保存状态信息 0x7F。0x7F 表示子任务
+						 * 处于停止状态。
+						 *
+						 *	2. 子任务的退出码已被处理(返回给了用户)，则需要将退出码
+						 * 清除。任务的退出码就是为了告诉别人我为什么退出，现在别人已经
+						 * 知道了我为什么退出，那我也就没有必要再保存退出原因了。
+						 *
+						 *	这里会存在一种情况，当后续再执行本系统调用时，如果该子
+						 * 任务的状态没有改变，一直是 TASK_STOPPED，这时就会在最开始的
+						 * 退出码判断的地方跳过该子任务。
+						 *
+						 *	3. 将子任务的资源使用信息写入到 ru 指向的用户空间中。
+						 *
+						 *	4. 返回子任务对应的进程号。
+						 */
+
+			/* 选到的子任务处于僵尸状态，这也是本系统调用期望的状态 */
 			case TASK_ZOMBIE:
 				current->cutime += p->utime + p->cutime;
 				current->cstime += p->stime + p->cstime;
 				current->cmin_flt += p->min_flt + p->cmin_flt;
 				current->cmaj_flt += p->maj_flt + p->cmaj_flt;
+						/*
+						 *	1. 子任务在用户态和内核态的运行时间分别累加到父任务中，
+						 * 这里的时间还包括子任务的所有子任务的时间。
+						 *
+						 *	2.
+						 */
 				if (ru != NULL)
 					getrusage(p, RUSAGE_BOTH, ru);
 				flag = p->pid;
 				if (stat_addr)
 					put_fs_long(p->exit_code, stat_addr);
+						/*
+						 *	1. 将子任务的资源使用信息写入到 ru 指向的用户空间中。
+						 *
+						 *	2. 暂时保存子任务对应的进程号，用于后面返回该进程号。
+						 *
+						 *	3. 将子任务的退出码写入到 stat_addr 指向的用户空间中。
+						 */
 				if (p->p_opptr != p->p_pptr) {
 					REMOVE_LINKS(p);
 					p->p_pptr = p->p_opptr;
@@ -643,23 +769,68 @@ repeat:
 #endif
 				retval = flag;
 				goto end_wait4;
+						/*
+						 *	1. 如果子任务的原始父任务与现在父任务(current)不是同
+						 * 一个任务: 则先将该子任务从现在父任务与子任务组成的链表中
+						 * 删除，然后设置该子任务的现在父任务为原始父任务，再将该子
+						 * 任务重新插入到现在父任务(原始父任务)的子任务链表中，最后
+						 * 通知该子任务的现在父任务(原始父任务)，由它来回收该子任务。
+						 *
+						 *	也就是说: 处于 TASK_ZOMBIE 状态的子任务的最终回收应该
+						 * 由其原始父任务(创建者)来完成，现在父任务无权回收该子任务。
+						 *
+						 *	2. 如果子任务的原始父任务和现在父任务是同一个任务，则
+						 * 由现在父任务直接回收子任务占有的还没有释放的所有资源，回收
+						 * 之后该子任务将彻底消失。
+						 *
+						 *	3. 最终返回子任务对应的进程号。
+						 */
 			default:
 				continue;
+						/*
+						 *	满足条件的子任务的状态不符合要求，则继续寻找下一个满足
+						 * 条件的子任务。
+						 */
 		}
 	}
+
+	/*
+	 *	if: 满足条件的子任务未退出，则需要等待其退出。
+	 */
 	if (flag) {
 		retval = 0;
 		if (options & WNOHANG)
 			goto end_wait4;
 		current->state=TASK_INTERRUPTIBLE;
 		schedule();
+				/*
+				 *	1. WNOHANG 标志要求指定的子任务没有退出(终止)时需立即返回，此时的
+				 * 返回值是 0。
+				 *
+				 *	2. 如果用户没有设置 WNOHANG 标志，则需要将当前任务挂起来等待，直到
+				 * 有满足条件的子任务退出，或者当前任务收到了中断本系统调用的信号为止。
+				 */
 		current->signal &= ~(1<<(SIGCHLD-1));
 		retval = -ERESTARTSYS;
 		if (current->signal & ~current->blocked)
 			goto end_wait4;
 		goto repeat;
+				/*
+				 *	当前任务被再次调度执行，需要检测它被唤醒的原因:
+				 *
+				 *	1. 如果收到了 SIGCHLD 以外的其它未阻塞的信号，则需要中断本次系统调用，
+				 * 转而去处理收到的信号，这时该系统调用的返回值为 -ERESTARTSYS，表示需要重启
+				 * 该系统调用，但该系统调用是否能够重启成功还要看信号的 SA_RESTART 标志。
+				 *
+				 *	2. 否则说明可能是指定的子任务或又有新的子任务退出了，因此需要从头开始
+				 * 重新走子任务的检测及处理流程。
+				 */
 	}
+
 	retval = -ECHILD;
+			/*
+			 *	没有符合要求的子任务存在，则系统调用直接退出并返回 -ECHILD。
+			 */
 end_wait4:
 	remove_wait_queue(&current->wait_chldexit,&wait);
 	return retval;
@@ -668,6 +839,10 @@ end_wait4:
 /*
  * sys_waitpid() remains for compatibility. waitpid() should be
  * implemented by calling sys_wait4() from libc.a.
+ */
+/*
+ *	sys_waitpid: 系统调用 waitpid 对应的系统调用处理函数，用于等待指定的子任务退出(终止)
+ * 并回收退出的子任务，waitpid 系统调用不获取指定的子任务的资源使用情况。
  */
 asmlinkage int sys_waitpid(pid_t pid,unsigned long * stat_addr, int options)
 {

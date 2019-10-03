@@ -580,9 +580,11 @@ asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
 				/* nothing */;
 			continue;
 					/*
-					 *	SIGCHLD 信号是一个特例，具体在 check_pending 中说明。如果
-					 * 当前任务收到了 SIGCHLD 信号，则需要等待其任何子任务退出，且等待
-					 * 过程中如果没有子任务退出或终止就马上返回。
+					 *	SIGCHLD 信号是一个特例，具体在 check_pending 中说明。
+					 *
+					 *	如果当前任务收到了 SIGCHLD 信号，则说明当前任务有子任务退出
+					 * 了，并且有可能会有多个子任务退出，所以需要用 sys_waitpid 循环回收
+					 * 已退出的这些子任务，所有的子任务回收完毕后将继续处理其它信号。
 					 */
 		}
 
