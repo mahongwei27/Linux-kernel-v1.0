@@ -398,6 +398,16 @@ struct task_struct {
 	 * For ease of programming... Normal sleeps don't need to
 	 * keep track of a wait-queue: every task has an entry of its own
 	 */
+			/*
+			 *	wait_chldexit: 用于等待子任务退出(终止)的等待队列，仅在 sys_wait4 中使用。
+			 * 当一个任务等待其子任务退出时，该任务需要睡眠进而让出处理器，而一个任务进入睡眠
+			 * 状态，则它必须要睡眠在某一个等待队列上等待唤醒。
+			 *
+			 *	因此，当父任务等待其子任务退出时，父任务就睡眠在父任务自己的 wait_chldexit
+			 * 队列上等待唤醒。当其子任务退出时会用 notify_parent 来通知父任务，通知的目的是
+			 * 为了告诉父任务，子任务已经退出(终止)了，请父任务来回收自己。在通知父任务的过程
+			 * 中会将睡眠在 wait_chldexit 队列上的父任务唤醒。
+			 */
 	unsigned short uid,euid,suid;
 	unsigned short gid,egid,sgid;
 			/*
@@ -780,6 +790,25 @@ __asm__("movw %%dx,%0\n\t" \
  * to keep them correct. Use only these two functions to add/remove
  * entries in the queues.
  */
+/*
+ *	add_wait_queue: 将元素 wait (实际表示一个任务)添加到等待队列 *p 中。
+ *
+ *	等待队列是由元素 struct wait_queue 组成的单循环链表，等待队列指针永远指向最早进入等待队列的那个
+ * 元素，等待队列并不会有 FIFO 或 LIFO 的操作，所以等待队列中的元素的排列方式无关紧要。
+ *
+ *	等待队列如下:
+ *
+ *
+ *	*p 表示的等待队列	最早进入等待队列的元素				最新进入等待队列的元素
+ *	+-------+
+ *	|  *p	|  ----------> 	+-------+  <---		+-------+  <---		+-------+  <----|
+ *	+-------+		| task	|      \	| task	|      \	| task	|	|
+ *				+-------+       \	+-------+       \	+-------+	|
+ *			|----- 	| next	|        -----  | next	|	 -----	| next	|	|
+ *			|	+-------+		+-------+		+-------+	|
+ *			|									|
+ *			|-----------------------------------------------------------------------|
+ */
 extern inline void add_wait_queue(struct wait_queue ** p, struct wait_queue * wait)
 {
 	unsigned long flags;
@@ -804,6 +833,9 @@ extern inline void add_wait_queue(struct wait_queue ** p, struct wait_queue * wa
 	restore_flags(flags);
 }
 
+/*
+ *	remove_wait_queue: 将元素 wait (实际表示一个任务)从等待队列 *p 中删除。
+ */
 extern inline void remove_wait_queue(struct wait_queue ** p, struct wait_queue * wait)
 {
 	unsigned long flags;

@@ -123,14 +123,34 @@ int send_sig(unsigned long sig,struct task_struct * p,int priv)
 	return 0;
 }
 
+/*
+ *	notify_parent: 用于通知 tsk 的现在父任务，任务 tsk 已经退出，请现在父任务来回收。
+ * 这里的现在父任务实际上就是原始父任务，如果现在父任务和原始父任务不是同一个任务，则会
+ * 在调用 notify_parent 通知之前将现在父任务设置为原始父任务。
+ */
 void notify_parent(struct task_struct * tsk)
 {
 	if (tsk->p_pptr == task[1])
 		tsk->exit_signal = SIGCHLD;
 	send_sig(tsk->exit_signal, tsk->p_pptr, 1);
 	wake_up_interruptible(&tsk->p_pptr->wait_chldexit);
+			/*
+			 *	1. 如果任务 tsk 的父任务是 1 号任务(init 进程)，则将任务 tsk 的退出信号改为
+			 * SIGCHLD。???
+			 *
+			 *	2. 将任务退出时应该发送给父任务的信号(exit_signal)发送给其父任务。
+			 *
+			 *	3. 唤醒父任务的 wait_chldexit 队列中睡眠等待的任务。如果这个队列中有等待任务，
+			 * 那也是父任务自己。
+			 */
 }
 
+/*
+ *	release: 释放任务 p 所占有的最后一点资源，使其彻底消失。
+ *
+ *	在此之前，任务 p 自己已经释放了大部分资源，变成了僵尸态，无法再运行，剩余的最后一点
+ * 资源只能由其父任务回收的时候来释放了。
+ */
 void release(struct task_struct * p)
 {
 	int i;
@@ -141,6 +161,10 @@ void release(struct task_struct * p)
 		printk("task releasing itself\n");
 		return;
 	}
+
+	/*
+	 *	for: 遍历除 0 号任务(idle)以外的所有任务，寻找任务 p。
+	 */
 	for (i=1 ; i<NR_TASKS ; i++)
 		if (task[i] == p) {
 			task[i] = NULL;
@@ -148,6 +172,17 @@ void release(struct task_struct * p)
 			free_page(p->kernel_stack_page);
 			free_page((long) p);
 			return;
+					/*
+					 *	1. 释放任务所占的任务槽(task[i])。
+					 *
+					 *	2. 将任务从其父任务与所有子任务组成的链表中删除。
+					 *
+					 *	3. 释放任务的内核态栈所占用的物理内存页面。
+					 *
+					 *	4. 释放任务的 task_struct 结构所占用的物理内存页面。
+					 *
+					 *	这些资源释放之后，任务就彻底消失了。
+					 */
 		}
 	panic("trying to release non-existent task");
 }
@@ -637,6 +672,11 @@ asmlinkage int sys_wait4(pid_t pid,unsigned long * stat_addr, int options, struc
 			 *	验证 stat_addr 指向的用于保存子任务退出状态的用户态空间是否可写。
 			 */
 	add_wait_queue(&current->wait_chldexit,&wait);
+			/*
+			 *	将当前任务加入到等待子任务退出的等待队列上。如果当前任务因子任务没有退出而
+			 * 进入睡眠状态等待，则在子任务退出并用 notify_parent 通知父任务的时候会唤醒挂在
+			 * wait_chldexit 队列上的当前任务。
+			 */
 repeat:
 	/*
 	 *	for: 从当前任务的最年轻的子任务开始扫描当前任务的子任务链表，直到找到指定
@@ -834,6 +874,10 @@ repeat:
 end_wait4:
 	remove_wait_queue(&current->wait_chldexit,&wait);
 	return retval;
+			/*
+			 *	系统调用处理函数执行完毕，当前任务已不再等待子任务退出，则将当前任务从
+			 * 等待子任务退出的等待队列上删除。
+			 */
 }
 
 /*

@@ -19,6 +19,17 @@
 
 #define __WCLONE	0x80000000
 
+/*
+ *	wait_queue: 这个结构体表示的不是一个等待队列，而是等待队列中的一个元素。
+ * 等待队列是由若干个这样的元素(struct wait_queue)组成的一个单循环链表。
+ *
+ *	系统中的等待队列将由一个指向 struct wait_queue 的指针来表示，比如 task_struct
+ * 结构中的 struct wait_queue *wait_chldexit 就表示等待子任务退出的等待队列。这个指针
+ * 将永远指向最早进入等待队列中的那个元素，具体参见 add_wait_queue。
+ *
+ *	其中:	task --- 等待队列中该元素对应的任务。
+ *		next --- 等待队列中指向下一个元素的指针。
+ */
 struct wait_queue {
 	struct task_struct * task;
 	struct wait_queue * next;

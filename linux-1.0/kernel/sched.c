@@ -412,6 +412,18 @@ asmlinkage int sys_pause(void)
  * the wait-queue structures directly, but only call wake_up() to wake
  * a process. The process itself must remove the queue once it has woken.
  */
+/*
+ *	wake_up: 唤醒等待队列 *q 上的处于可中断或不可中断睡眠状态的所有任务。
+ *
+ *	1. 等待队列上处于停止状态的任务不能被唤醒，它们只能被信号唤醒。
+ *
+ *	2. 这里只是唤醒等待队列上的任务，并不会将它们从等待队列上删除。
+ *
+ *	3. 这里不需要使用开关中断的操作，中断中有可能会调用 wake_up，比如从块设备
+ * 中读取数据结束之后在中断中调用 wake_up 唤醒等待块数据的任务。但中断中仅仅是唤醒
+ * 任务，并不会更改等待队列的结构，当任务一旦被唤醒并重新运行后，就必须将自己从等待
+ * 队列中删除。
+ */
 void wake_up(struct wait_queue **q)
 {
 	struct wait_queue *tmp;
@@ -419,6 +431,12 @@ void wake_up(struct wait_queue **q)
 
 	if (!q || !(tmp = *q))
 		return;
+			/* 等待队列不存在或等待队列中没有等待的任务 */
+
+	/*
+	 *	do - while: 循环扫描等待队列中的所有任务，唤醒处于可中断睡眠状态
+	 * 或不可中断睡眠状态的任务。
+	 */
 	do {
 		if ((p = tmp->task) != NULL) {
 			if ((p->state == TASK_UNINTERRUPTIBLE) ||
@@ -426,6 +444,18 @@ void wake_up(struct wait_queue **q)
 				p->state = TASK_RUNNING;
 				if (p->counter > current->counter)
 					need_resched = 1;
+						/*
+						 *	1. 将被唤醒的任务的状态置为就绪态，使其参与调度并执行。
+						 *
+						 *	2. 任务的 counter 值越大，表示任务的优先级越高。这里
+						 * 只是将需要调度的标志置位，并不会立即产生调度，只有在检测
+						 * need_resched 的地方才会重新产生调度。因此系统对高优先级
+						 * 任务的响应并不是实时的。
+						 *
+						 *	虽然不是实时调度，但是时间也不会很长，在处理信号的
+						 * 地方会检测 need_resched，而每隔 10ms 的定时器中断就会触发
+						 * 一次信号处理。
+						 */
 			}
 		}
 		if (!tmp->next) {
@@ -434,11 +464,22 @@ void wake_up(struct wait_queue **q)
 			printk("       *q = %p\n",*q);
 			printk("      tmp = %p\n",tmp);
 			break;
+					/* 等待队列是一个循环队列，正常情况下不会出现没有下一个元素的情况 */
 		}
 		tmp = tmp->next;
 	} while (tmp != *q);
 }
 
+/*
+ *	wake_up_interruptible: 唤醒等待队列 *q 上的处于可中断睡眠状态的所有任务。
+ *
+ *	1. 等待队列上处于不可中断睡眠状态的任务不能被唤醒，它们只能被 wake_up 唤醒。
+ *
+ *	2. 等待队列上处于停止状态的任务不能被唤醒，它们只能被信号唤醒。
+ *
+ *	3. 这里只是唤醒等待队列上的任务，并不会将它们从等待队列上删除。任务一旦被
+ * 唤醒并重新运行后，就必须将自己从等待队列中删除。
+ */
 void wake_up_interruptible(struct wait_queue **q)
 {
 	struct wait_queue *tmp;
@@ -487,20 +528,31 @@ static inline void __sleep_on(struct wait_queue **p, int state)
 		return;
 	if (current == task[0])
 		panic("task[0] trying to sleep");
-	current->state = state;
-	add_wait_queue(p, &wait);
+	current->state = state;		/* 设置当前任务的睡眠状态 */
+	add_wait_queue(p, &wait);	/* 将当前任务加入到等待队列 *p 中 */
 	save_flags(flags);
-	sti();
-	schedule();
-	remove_wait_queue(p, &wait);
+	sti();				/* 开中断 ??? */
+	schedule();			/* 调度新任务运行 */
+	remove_wait_queue(p, &wait);	/* 当前任务被唤醒之后必须将自己从等待队列中删除 */
 	restore_flags(flags);
 }
 
+/*
+ *	interruptible_sleep_on: 当前任务进入可中断睡眠状态，且睡眠在 *p 表示的等待队列上。
+ * 退出时表示任务已从睡眠状态中醒来并重新运行。让任务醒来的办法可以是信号唤醒，也可以是
+ * 其它任务调用 wake_up_interruptible() 或 wake_up() 显示唤醒。
+ *
+ */
 void interruptible_sleep_on(struct wait_queue **p)
 {
 	__sleep_on(p,TASK_INTERRUPTIBLE);
 }
 
+/*
+ *	sleep_on: 当前任务进入不可中断睡眠状态，且睡眠在 *p 表示的等待队列上。
+ * 退出时表示任务已从睡眠状态中醒来并重新运行。让任务醒来的唯一办法是其它任务
+ * 调用 wake_up() 显示唤醒。
+ */
 void sleep_on(struct wait_queue **p)
 {
 	__sleep_on(p,TASK_UNINTERRUPTIBLE);
