@@ -415,6 +415,15 @@ asmlinkage int sys_waitpid(pid_t pid,unsigned long * stat_addr, int options);
 /*
  * This sets regs->esp even though we don't actually use sigstacks yet..
  */
+/*
+ *	sys_sigreturn: 系统调用 sigreturn 对应的系统调用处理函数。sigreturn 将会在一个信号
+ * 的信号处理函数执行完毕之后执行，用于从这个信号的信号栈帧中恢复信号处理函数执行完毕之后
+ * 的原始现场。
+ *
+ *	入参:	__unused --- 实际上，用户并没有为 sigreturn 设置参数。因此，进入 sys_sigreturn
+ * 以后，当前内核态栈的栈顶中保存的值，也就是 esp0 处的 EBX 就会被当做 sys_sigreturn 的参数。
+ * 不过，这里并不会真正使用这个参数，只是用这个参数来获取一下当前内核态栈的栈顶(esp0)而已。
+ */
 asmlinkage int sys_sigreturn(unsigned long __unused)
 {
 #define COPY(x) regs->x = context.x
@@ -422,6 +431,17 @@ asmlinkage int sys_sigreturn(unsigned long __unused)
 if ((context.x & 0xfffc) && (context.x & 3) != 3) goto badframe; COPY(x);
 #define COPY_SEG_STRICT(x) \
 if (!(context.x & 0xfffc) || (context.x & 3) != 3) goto badframe; COPY(x);
+			/*
+			 *	1. COPY(x): 用于复制任意数据。
+			 *
+			 *	2. COPY_SEG(x): 用于复制普通段选择符 DS、ES、FS、GS。
+			 *
+			 *	3. COPY_SEG_STRICT(x): 用于复制代码段选择符 CS 和堆栈段选择符 SS。
+			 *
+			 *	4. 复制段选择符时的判断条件是通过检测段选择符中的 Index、TI、RPL 字段来判断
+			 * 要复制的段选择符是否是一个有效的段选择符。
+			 */
+
 	struct sigcontext_struct context;
 	struct pt_regs * regs;
 
@@ -429,6 +449,30 @@ if (!(context.x & 0xfffc) || (context.x & 3) != 3) goto badframe; COPY(x);
 	if (verify_area(VERIFY_READ, (void *) regs->esp, sizeof(context)))
 		goto badframe;
 	memcpy_fromfs(&context,(void *) regs->esp, sizeof(context));
+			/*
+			 *	1. regs 指向当前任务的内核态栈的 esp0 处。
+			 *
+			 *	2. 验证保存有当前信号栈帧的用户态空间是否可读。任务进入内核态以后，内核态栈的
+			 * regs->esp 中保存的是任务进入内核态之前的栈指针，对于 sigreturn 系统调用，这个栈指针
+			 * 指向当前信号栈帧的栈顶处，也就是 frame + 2 的位置处。
+			 *
+			 *	3. 将当前信号栈帧从 regs->esp 指向的用户态空间中完整的复制到内核态空间中的
+			 * context 结构中。
+			 */
+
+	/*
+	 *	below: 下面将从当前信号栈帧中恢复当前信号处理函数执行完毕之后的原始现场。
+	 *
+	 *	1. 任务进入内核态时系统会在其内核态栈底保存一份任务进入内核态之前的原始
+	 * 现场，对于 sigreturn 系统调用，原始现场中的代码指针将指向当前栈帧的 frame + 26
+	 * 位置处，栈指针将指向当前栈帧的 frame + 2 位置处，显然，这个原始现场是无效的，
+	 * 任务返回到用户态后也无法正常运行。
+	 *
+	 *	2. 基于以上原因，就需要在任务从内核态返回到用户态之前为其设置一个有效的
+	 * 原始现场，而这个有效的原始现场就在当前信号的信号栈帧中，设置有效原始现场的方法
+	 * 也就是用信号栈帧中的原始现场覆盖现在保存在内核态栈底的原始现场。覆盖以后，当
+	 * 任务从内核态返回到用户态时，就会返回到有效的原始现场中继续运行。
+	 */
 	current->blocked = context.oldmask & _BLOCKABLE;
 	COPY_SEG(ds);
 	COPY_SEG(es);
@@ -443,8 +487,24 @@ if (!(context.x & 0xfffc) || (context.x & 3) != 3) goto badframe; COPY(x);
 	COPY(edi); COPY(esi);
 	regs->eflags &= ~0xCD5;
 	regs->eflags |= context.eflags & 0xCD5;
+			/*
+			 *	1. 从信号栈帧的 oldmask 中恢复任务的阻塞码。
+			 *
+			 *	2. 从信号栈帧中恢复寄存器信息(ds ---> esi)。context.eip 是原始现场的代码指针，
+			 * context.esp 是栈帧中 frame + 9 位置处的原始现场的栈顶指针。
+			 *
+			 *	3. 从信号栈帧的 eflags 中恢复原始现场的标志寄存器。这里只从栈帧中保存的标志
+			 * 寄存器中恢复 CF PF AF ZF SF DF OF 的状态，其它标志以现有的状态为准。
+			 */
 	regs->orig_eax = -1;		/* disable syscall checks */
 	return context.eax;
+			/*
+			 *	1. 因为 sigreturn 系统调用只能执行一次，决不允许被重启，故将 ORIG_EAX 处保存
+			 * 的值由 __NR_sigreturn 更改为 -1。这样设置以后，当 sys_sigreturn 退出并执行后面的
+			 * 信号处理流程(ret_from_sys_call)时，就不会再检测是否需要重启系统调用了。
+			 *
+			 *	2. 从信号栈帧中恢复原始返回值。
+			 */
 badframe:
 	do_exit(SIGSEGV);
 }
@@ -462,8 +522,7 @@ badframe:
  *	setup_frame: 为一个信号设置信号栈帧，信号栈帧的布局及内容由 struct sigcontext_struct 来描述。
  * 这个信号栈帧可以设置于任务的用户态栈中，也可以设置于位于用户态空间的信号自己独立的信号栈中。
  *
- *	一个信号的信号栈帧并不是为信号处理函数的执行而准备的，相反，它用于信号处理函数执行完毕之后，
- * 当然，栈帧中有极少的信息会在信号处理函数的执行过程中使用到。
+ *	一个信号的信号栈帧并不是为信号处理函数的执行而准备的，相反，它用于信号处理函数执行完毕之后。
  *
  *	信号栈帧中保存的是信号处理函数执行完毕之后需要恢复的现场信息，当信号处理函数执行结束并在返回
  * 时会触发系统去执行信号返回程序 sys_sigreturn。信号返回程序执行时会从当前信号栈帧中恢复信号处理函数
@@ -490,6 +549,9 @@ badframe:
  *
  *	【信号栈帧存储于任务的用户态栈时的布局如下】:
  *
+ *	严格讲，一个信号的信号栈帧是从 frame + 2 到 frame + 23。为了方便描述，
+ * 这里将 frame + 0 到 frame + 31 称为一个信号的信号栈帧。
+ *
  *							/----->	如果这里是一个信号栈帧，那就是前一个信号栈帧
  *							|	的 frame + 0 处。如果不是信号栈帧，那就是任务
  *			+-----------------------+	|	在进入内核态之前的栈指针 SS:ESP 所指示的用户态
@@ -515,8 +577,8 @@ badframe:
  *		|  |	+-----------------------+
  *	+20	|  |	|	regs->ss	|
  *		|  |	+-----------------------+
- *	+19	|  |	|	regs->esp	|
- *		|  |	+-----------------------+
+ *	+19	|  |	|	regs->esp	|	<=== 在信号栈帧 sigcontext_struct 中，这个位置的成员
+ *		|  |	+-----------------------+		名称是 esp_at_signal。
  *	+18	|  |	|	regs->eflags	|
  *		|  |	+-----------------------+
  *	+17	|  |	|	regs->cs	|
@@ -536,9 +598,9 @@ badframe:
  *	+10	|  |	|	regs->ebx	|
  *		|  |	+-----------------------+
  *	+9	|  \---	|	*fp		|	<=== 这里保存的是任务进入内核态之前的用户态栈指针或
- *		|	+-----------------------+		前一个信号栈帧的栈顶地址。
- *	+8	|	|	regs->ebp	|
- *		|	+-----------------------+
+ *		|	+-----------------------+		前一个信号栈帧的栈顶地址。需要注意的是: 在
+ *	+8	|	|	regs->ebp	|		信号栈帧结构 sigcontext_struct 中，这个位置
+ *		|	+-----------------------+		的成员名称是 esp。
  *	+7	|	|	regs->esi	|
  *		|	+-----------------------+
  *	+6	|	|	regs->edi	|
@@ -616,10 +678,6 @@ static void setup_frame(struct sigaction * sa, unsigned long ** fp, unsigned lon
 			 *	最后，在执行 ret 指令时，处理器会将栈指针指向的 frame 处的返回地址 __CODE 弹出
 			 * 到代码指针 CS:EIP 中。这时，代码指针将指向信号栈帧中 frame + 24 的位置处，进而执行
 			 * 预先存储在这里的 3 条指令，这时栈指针 SS:ESP 将指向 frame + 1 的位置。
-			 *
-			 *
-			 *	由此可见，虽然一个信号的信号栈帧很大，里边保存了很多信息，但是只有 __CODE 和
-			 * signr 在信号处理函数中会用到，其余的所有信息在信号处理函数执行过程中都不会被访问到。
 			 */
 	put_fs_long(regs->gs, frame+2);
 	put_fs_long(regs->fs, frame+3);
@@ -635,6 +693,9 @@ static void setup_frame(struct sigaction * sa, unsigned long ** fp, unsigned lon
 			 *	如果本信号栈帧是第一个信号栈帧，则这里保存的是任务进入内核态之前的用户态栈指针，
 			 * 如果不是，则这里保存的是前一个信号栈帧的栈顶地址。这个地方保存的地址信息将是从当前
 			 * 栈帧寻找前一个栈帧的唯一通道。
+			 *
+			 *	需要注意的是: 在信号栈帧结构 sigcontext_struct 中，这个位置的成员名称是 esp，
+			 * 而 frame + 19 位置的名称是 esp_at_signal。
 			 */
 	put_fs_long(regs->ebx, frame+10);
 	put_fs_long(regs->edx, frame+11);
@@ -1029,7 +1090,11 @@ asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
 				 */
 /* force a supervisor-mode page-in of the signal handler to reduce races */
 		__asm__("testb $0,%%fs:%0": :"m" (*(char *) eip));
-				/*  */
+				/*
+				 *	如果信号处理函数的代码不在内存中，那么执行这条测试指令时就会产生缺页
+				 * 异常，这时处理器就会处理这个异常，最终使得信号处理函数的代码被加载到内存中，
+				 * 至于信号处理函数入口处的这个字节值是不是 0 无关紧要。
+				 */
 		regs->cs = USER_CS; regs->ss = USER_DS;
 		regs->ds = USER_DS; regs->es = USER_DS;
 		regs->gs = USER_DS; regs->fs = USER_DS;
@@ -1074,4 +1139,37 @@ asmlinkage int do_signal(unsigned long oldmask, struct pt_regs * regs)
 			 *	2. 任务的信号处理流程结束，所有需要设置的信息都已经设置完毕，当任务从这里退出
 			 * 并返回到用户态时将直接进入信号处理函数执行流程。
 			 */
+
+/*
+ *	至此:
+ *
+ *	1. 任务进入内核态之前的原始现场已经保存在了第一个设置的信号栈帧中，这个信号栈帧
+ * 对应的信号处理函数将最后一个执行。
+ *
+ *	2. 所有需要执行用户自定义处理函数的信号的栈帧都已经设置好了，依次保存在任务的
+ * 用户态栈上。
+ *
+ *	3. 任务内核态栈底保存的用户态现场(代码指针和栈指针)已经更改成了第一个要执行的
+ * 信号处理函数(最后一个设置信号栈帧)的现场。
+ *
+ *	故信号处理函数的执行流程如下:
+ *
+ *	1. 任务退出内核态，返回到用户态，直接跳转到第一个信号处理函数中去执行。
+ *
+ *	2. 第一个信号处理函数执行完毕之后，触发 sigreturn 系统调用。
+ *
+ *	3. 任务重新进入内核态，并执行 sys_sigreturn，从第一个信号处理函数对应的信号栈帧
+ * 中恢复第二个信号处理函数的现场。
+ *
+ *	4. 任务退出内核态，返回到用户态，直接跳转到第二个信号处理函数中去执行。
+ *
+ *	5. 依次类推，直到最后一个信号处理函数执行完毕。
+ *
+ *	6. 最后一个信号处理函数执行完毕之后，触发 sigreturn 系统调用。
+ *
+ *	7. 任务重新进入内核态，并执行 sys_sigreturn，从最后一个信号处理函数对应的信号栈帧
+ * 中恢复任务进入内核态之前的原始现场。
+ *
+ *	8. 任务退出内核态，返回到用户态，从进入内核态之前的现场处继续执行。
+ */
 }
